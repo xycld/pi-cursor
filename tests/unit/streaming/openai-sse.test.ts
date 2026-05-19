@@ -148,6 +148,43 @@ describe("openai-sse", () => {
     expect(final).toEqual([]);
   });
 
+  it("handles text streams that mix delta and accumulated partial events", () => {
+    const converter = new StreamToSseConverter("test-model", {
+      id: "chunk-id",
+      created: 123,
+    });
+    const now = Date.now();
+
+    const first = converter.handleEvent({
+      type: "assistant",
+      timestamp_ms: now + 1,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Hello" }],
+      },
+    } as any);
+    const second = converter.handleEvent({
+      type: "assistant",
+      timestamp_ms: now + 2,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: " world" }],
+      },
+    } as any);
+    const third = converter.handleEvent({
+      type: "assistant",
+      timestamp_ms: now + 3,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Hello world!" }],
+      },
+    } as any);
+
+    expect(parseChunk(first[0]).choices[0].delta.content).toBe("Hello");
+    expect(parseChunk(second[0]).choices[0].delta.content).toBe(" world");
+    expect(parseChunk(third[0]).choices[0].delta.content).toBe("!");
+  });
+
   it("does not duplicate thinking when partial (timestamp_ms) events are followed by final accumulated event", () => {
     const converter = new StreamToSseConverter("test-model", {
       id: "chunk-id",
@@ -190,6 +227,43 @@ describe("openai-sse", () => {
     });
 
     expect(final).toEqual([]);
+  });
+
+  it("handles thinking streams that mix delta and accumulated partial events", () => {
+    const converter = new StreamToSseConverter("test-model", {
+      id: "chunk-id",
+      created: 123,
+    });
+    const now = Date.now();
+
+    const first = converter.handleEvent({
+      type: "assistant",
+      timestamp_ms: now + 1,
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "Plan" }],
+      },
+    } as any);
+    const second = converter.handleEvent({
+      type: "assistant",
+      timestamp_ms: now + 2,
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: " more" }],
+      },
+    } as any);
+    const third = converter.handleEvent({
+      type: "assistant",
+      timestamp_ms: now + 3,
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "Plan more carefully" }],
+      },
+    } as any);
+
+    expect(parseChunk(first[0]).choices[0].delta.reasoning_content).toBe("Plan");
+    expect(parseChunk(second[0]).choices[0].delta.reasoning_content).toBe(" more");
+    expect(parseChunk(third[0]).choices[0].delta.reasoning_content).toBe(" carefully");
   });
 
   it("still works with accumulated-only events (no timestamp_ms) via DeltaTracker", () => {

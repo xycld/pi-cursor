@@ -146,6 +146,38 @@ describe("ai-sdk stream parts", () => {
     expect(final).toEqual([]);
   });
 
+  it("handles text streams that mix delta and accumulated partial events", () => {
+    const converter = new StreamToAiSdkParts();
+    const now = Date.now();
+
+    expect(converter.handleEvent({
+      type: "assistant",
+      timestamp_ms: now + 1,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Hello" }],
+      },
+    } as any)).toEqual([{ type: "text-delta", textDelta: "Hello" }]);
+
+    expect(converter.handleEvent({
+      type: "assistant",
+      timestamp_ms: now + 2,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: " world" }],
+      },
+    } as any)).toEqual([{ type: "text-delta", textDelta: " world" }]);
+
+    expect(converter.handleEvent({
+      type: "assistant",
+      timestamp_ms: now + 3,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "Hello world!" }],
+      },
+    } as any)).toEqual([{ type: "text-delta", textDelta: "!" }]);
+  });
+
   it("does not duplicate thinking when partial (timestamp_ms) events are followed by final accumulated event", () => {
     const converter = new StreamToAiSdkParts();
     const now = Date.now();
@@ -182,6 +214,38 @@ describe("ai-sdk stream parts", () => {
     });
 
     expect(final).toEqual([]);
+  });
+
+  it("handles thinking streams that mix delta and accumulated partial events", () => {
+    const converter = new StreamToAiSdkParts();
+    const now = Date.now();
+
+    expect(converter.handleEvent({
+      type: "assistant",
+      timestamp_ms: now + 1,
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "Plan" }],
+      },
+    } as any)).toEqual([{ type: "text-delta", textDelta: "Plan" }]);
+
+    expect(converter.handleEvent({
+      type: "assistant",
+      timestamp_ms: now + 2,
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: " more" }],
+      },
+    } as any)).toEqual([{ type: "text-delta", textDelta: " more" }]);
+
+    expect(converter.handleEvent({
+      type: "assistant",
+      timestamp_ms: now + 3,
+      message: {
+        role: "assistant",
+        content: [{ type: "thinking", thinking: "Plan more carefully" }],
+      },
+    } as any)).toEqual([{ type: "text-delta", textDelta: " carefully" }]);
   });
 
   it("still works with accumulated-only events (no timestamp_ms) via DeltaTracker", () => {

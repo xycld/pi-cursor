@@ -8,6 +8,7 @@ import {
   type StreamJsonEvent,
   type StreamJsonToolCallEvent,
 } from "./types.js";
+import { MixedDeltaTracker } from "./delta-tracker.js";
 
 type OpenAiToolCall = {
   index: number;
@@ -59,8 +60,7 @@ export class StreamToSseConverter {
   private readonly id: string;
   private readonly created: number;
   private readonly model: string;
-  private emittedText = "";
-  private emittedThinking = "";
+  private readonly tracker = new MixedDeltaTracker();
 
   constructor(model: string, options?: { id?: string; created?: number }) {
     this.model = model;
@@ -72,14 +72,14 @@ export class StreamToSseConverter {
     if (isAssistantText(event)) {
       const text = extractText(event);
       if (!text) return [];
-      const delta = this.nextDelta(text, "text");
+      const delta = this.tracker.nextText(text);
       return delta ? [this.chunkWith({ content: delta })] : [];
     }
 
     if (isThinking(event)) {
       const text = extractThinking(event);
       if (!text) return [];
-      const delta = this.nextDelta(text, "thinking");
+      const delta = this.tracker.nextThinking(text);
       return delta ? [this.chunkWith({ reasoning_content: delta })] : [];
     }
 
@@ -88,35 +88,6 @@ export class StreamToSseConverter {
     }
 
     return [];
-  }
-
-  /**
-   * Computes the actual new delta, correctly handling both delta-style and
-   * accumulated-style partial events from cursor-agent.
-   */
-  private nextDelta(text: string, channel: "text" | "thinking"): string {
-    const emitted = channel === "text" ? this.emittedText : this.emittedThinking;
-
-    if (!emitted) {
-      if (channel === "text") this.emittedText = text;
-      else this.emittedThinking = text;
-      return text;
-    }
-
-    if (text.startsWith(emitted)) {
-      const delta = text.slice(emitted.length);
-      if (channel === "text") this.emittedText = text;
-      else this.emittedThinking = text;
-      return delta;
-    }
-
-    if (emitted.startsWith(text)) {
-      return "";
-    }
-
-    if (channel === "text") this.emittedText += text;
-    else this.emittedThinking += text;
-    return text;
   }
 
   private chunkWith(delta: OpenAiDelta): string {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { DeltaTracker } from "../../../src/streaming/delta-tracker.js";
+import { DeltaTracker, MixedDeltaTracker } from "../../../src/streaming/delta-tracker.js";
 
 describe("DeltaTracker", () => {
   it("returns full text for first event", () => {
@@ -86,5 +86,24 @@ describe("DeltaTracker", () => {
     expect(tracker.nextText("Hello")).toBe("Hello");
     tracker.reset();
     expect(tracker.nextText("Hello")).toBe("Hello");
+  });
+});
+
+describe("MixedDeltaTracker", () => {
+  it("handles streams that mix delta and accumulated text payloads", () => {
+    const tracker = new MixedDeltaTracker();
+
+    expect(tracker.nextText("Hello")).toBe("Hello");
+    expect(tracker.nextText(" world")).toBe(" world");
+    expect(tracker.nextText("Hello world!")).toBe("!");
+  });
+
+  it("tracks thinking separately from assistant text", () => {
+    const tracker = new MixedDeltaTracker();
+
+    expect(tracker.nextThinking("Plan")).toBe("Plan");
+    expect(tracker.nextThinking(" more")).toBe(" more");
+    expect(tracker.nextText("Answer")).toBe("Answer");
+    expect(tracker.nextThinking("Plan more carefully")).toBe(" carefully");
   });
 });

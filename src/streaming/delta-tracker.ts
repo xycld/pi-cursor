@@ -45,3 +45,45 @@ export class DeltaTracker {
     return current.slice(i);
   }
 }
+
+export class MixedDeltaTracker {
+  private emittedText = "";
+  private emittedThinking = "";
+
+  nextText(value: string): string {
+    const delta = this.diff(this.emittedText, value);
+    if (delta) {
+      this.emittedText += delta;
+    }
+    return delta;
+  }
+
+  nextThinking(value: string): string {
+    const delta = this.diff(this.emittedThinking, value);
+    if (delta) {
+      this.emittedThinking += delta;
+    }
+    return delta;
+  }
+
+  reset(): void {
+    this.emittedText = "";
+    this.emittedThinking = "";
+  }
+
+  private diff(emitted: string, current: string): string {
+    if (!emitted) {
+      return current;
+    }
+
+    if (current.startsWith(emitted)) {
+      return current.slice(emitted.length);
+    }
+
+    if (emitted.startsWith(current)) {
+      return "";
+    }
+
+    return current;
+  }
+}

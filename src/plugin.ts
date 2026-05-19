@@ -8,6 +8,7 @@ import { isAbsolute, join, relative, resolve } from "path";
 import { ToolMapper, type ToolUpdate } from "./acp/tools.js";
 import { startCursorOAuth } from "./auth";
 import { LineBuffer } from "./streaming/line-buffer.js";
+import { MixedDeltaTracker } from "./streaming/delta-tracker.js";
 import { StreamToSseConverter, formatSseDone } from "./streaming/openai-sse.js";
 import { parseStreamJsonLine } from "./streaming/parser.js";
 import { extractText, extractThinking, isAssistantText, isResult, isThinking } from "./streaming/types.js";
@@ -444,8 +445,7 @@ export function extractCompletionFromStream(output: string): {
   let usage: OpenAiUsage | undefined;
   let sawAssistantPartials = false;
   let sawThinkingPartials = false;
-  let lastPartialText = "";
-  let lastPartialThinking = "";
+  const tracker = new MixedDeltaTracker();
 
   for (const line of lines) {
     const event = parseStreamJsonLine(line);
@@ -460,14 +460,7 @@ export function extractCompletionFromStream(output: string): {
       const isPartial = typeof (event as any).timestamp_ms === "number";
       if (isPartial) {
         sawAssistantPartials = true;
-        if (text.startsWith(lastPartialText)) {
-          assistantText += text.slice(lastPartialText.length);
-        } else if (!lastPartialText.startsWith(text)) {
-          assistantText += text;
-        }
-        if (text.length > lastPartialText.length) {
-          lastPartialText = text;
-        }
+        assistantText += tracker.nextText(text);
       } else if (!sawAssistantPartials) {
         assistantText = text;
       }
@@ -479,14 +472,7 @@ export function extractCompletionFromStream(output: string): {
         const isPartial = typeof (event as any).timestamp_ms === "number";
         if (isPartial) {
           sawThinkingPartials = true;
-          if (thinking.startsWith(lastPartialThinking)) {
-            reasoningText += thinking.slice(lastPartialThinking.length);
-          } else if (!lastPartialThinking.startsWith(thinking)) {
-            reasoningText += thinking;
-          }
-          if (thinking.length > lastPartialThinking.length) {
-            lastPartialThinking = thinking;
-          }
+          reasoningText += tracker.nextThinking(thinking);
         } else if (!sawThinkingPartials) {
           reasoningText = thinking;
         }
@@ -1434,6 +1420,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         const chunkQueue: Buffer[] = [];
         let draining = false;
         let childClosed = false;
+        let childCloseHandled = false;
         let childExitCode: number | null = null;
 
         const processLines = async (lines: string[]) => {
@@ -1509,7 +1496,8 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
               await processLines(lineBuffer.push(chunk));
             }
 
-            if (childClosed && !streamTerminated && !res.writableEnded) {
+            if (childClosed && !childCloseHandled && !streamTerminated && !res.writableEnded) {
+              childCloseHandled = true;
               await processLines(lineBuffer.flush());
               if (streamTerminated || res.writableEnded) return;
 
@@ -1555,11 +1543,16 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 res.write(`data: ${JSON.stringify(usageChunk)}\n\n`);
               }
               res.write(formatSseDone());
+              streamTerminated = true;
               res.end();
             }
           } finally {
             draining = false;
-            if (chunkQueue.length > 0 || (childClosed && !streamTerminated && !res.writableEnded)) {
+            if (
+              !streamTerminated
+              && !res.writableEnded
+              && (chunkQueue.length > 0 || (childClosed && !childCloseHandled))
+            ) {
               drainQueue();
             }
           }
