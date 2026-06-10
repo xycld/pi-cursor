@@ -13,14 +13,13 @@
  * 5. Closing the per-request stream when "done" is received
  *
  * Benefits:
- * - Agent.create overhead (~1s) paid only once per (model, cwd) pair (cached in runner)
- * - Node process boot overhead (~0.5s) paid once for all requests
- * - Remaining ~1s latency on first request comes from SDK initialization, not fork
+ * - Node process boot + SDK import cost paid once for all requests
+ * - Requests run concurrently inside the runner (OpenCode fires several at once)
+ * - Also exposes listModelsViaRunner() for model discovery (op: "listModels")
  *
  * Limitations:
- * - kill() on a single child does not interrupt the runner (the request continues)
- *   This is acceptable since runner processes requests sequentially anyway
- * - If multiple apiKeys arrive (rare), the runner is re-spawned with the new key
+ * - kill() on a single child does not interrupt the in-flight SDK run
+ * - If a different apiKey arrives (rare), the runner is re-spawned with the new key
  */
 
 import { spawn } from "node:child_process";
@@ -189,6 +188,18 @@ class SdkRunnerSingleton {
     }
 
     const request = { id: requestId, model, cwd, prompt };
+    this.runnerProcess.stdin.write(JSON.stringify(request) + "\n");
+  }
+
+
+  /**
+   * Send a raw request to the runner (for operations like listModels).
+   * The request object is sent as-is; the caller is responsible for including id.
+   */
+  sendRawRequest(request: Record<string, any>): void {
+    if (!this.runnerProcess || !this.runnerProcess.stdin) {
+      throw new Error("Runner process not ready");
+    }
     this.runnerProcess.stdin.write(JSON.stringify(request) + "\n");
   }
 
@@ -433,3 +444,72 @@ export function createSdkNodeChild(options: {
   });
   return child;
 }
+
+
+/**
+ * List available models via the SDK runner.
+ * 
+ * This function:
+ * 1. Ensures the runner is spawned with the provided apiKey
+ * 2. Sends a listModels request
+ * 3. Accumulates events and returns the models array from the models event
+ * 4. Times out after 15 seconds
+ */
+/**
+ * List available models via the SDK runner.
+ * 
+ * This function:
+ * 1. Ensures the runner is spawned with the provided apiKey
+ * 2. Sends a listModels request
+ * 3. Accumulates events and returns the models array from the models event
+ * 4. Times out after 15 seconds
+ */
+export async function listModelsViaRunner(apiKey: string): Promise<Array<{ id: string; name: string }>> {
+  try {
+    // Ensure runner is alive
+    await singleton.ensureRunning(apiKey);
+
+    // Return a promise that accumulates events
+    return new Promise(async (resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("Timeout")), 15000);
+      const events: any[] = [];
+      let gotModels = false;
+
+      const decoder = new TextDecoder();
+      const controller = {
+        enqueue: (data: Uint8Array) => {
+          try {
+            const event = JSON.parse(decoder.decode(data).trim());
+            events.push(event);
+            if (event.type === "models") gotModels = true;
+          } catch (err) {
+            log.warn("listModels: failed to parse event", { error: String(err) });
+          }
+        },
+        close: () => {},
+        error: (e: Error) => reject(e),
+      } as any;
+
+      const id = singleton.registerPending(
+        controller,
+        (code: number) => {
+          clearTimeout(timeout as any);
+          if (!gotModels) return reject(new Error("No models"));
+          if (code !== 0) return reject(new Error(`Code ${code}`));
+          const m = events.find((e) => e.type === "models");
+          resolve(m?.models ?? []);
+        },
+        (e) => {
+          clearTimeout(timeout as any);
+          reject(e);
+        }
+      );
+
+      singleton.sendRawRequest({ id, op: "listModels" });
+    });
+  } catch (err) {
+    throw new Error(`listModelsViaRunner failed: ${String(err)}`);
+  }
+}
+
+

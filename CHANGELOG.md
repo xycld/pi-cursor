@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Runtime:** Replaced the `cursor-agent` binary (removed by Cursor in IDE versions >= 0.43) with the official `@cursor/sdk`. The SDK runs in a persistent Node.js child process (`scripts/sdk-runner.mjs`) instead of in-process, because the SDK's ConnectRPC/HTTP2 stack hangs inside OpenCode's embedded Bun runtime and its native `sqlite3` dependency cannot be bundled. The persistent process avoids paying Node boot + SDK import cost on every request.
 - **Tool calls:** The SDK emits MCP tool calls as a generic tool named `mcp` with `{providerIdentifier, toolName, args}`; the runner remaps them to the `mcp__<server>__<tool>` names OpenCode expects, so MCP tools are executed instead of rejected as unavailable.
+- **Model discovery:** `/v1/models` and the startup auto-refresh now query `Cursor.models.list()` from the SDK (via the runner) instead of the removed `cursor-agent models` command. Newly released Cursor models are added to `opencode.json` automatically (additive only), with an updated hardcoded fallback when no API key is available.
 - **Installation:** New local development workflow via `scripts/install-plugin.sh`, which creates a TypeScript wrapper at `~/.config/opencode/plugins/cursor-acp.ts` pointing at the repository entry point.
 
 ### Fixed

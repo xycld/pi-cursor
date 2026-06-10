@@ -685,7 +685,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         try {
           const { ModelDiscoveryService } = await import("./models/discovery.js");
           const discovery = new ModelDiscoveryService();
-          const modelList = await discovery.discover();
+          const modelList = await discovery.discover(resolveApiKey());
           const models = modelList.map((m: any) => ({
             id: typeof m === "string" ? m : m.id,
             object: "model",
@@ -1144,7 +1144,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         try {
           const { ModelDiscoveryService } = await import("./models/discovery.js");
           const discovery = new ModelDiscoveryService();
-          const modelList = await discovery.discover();
+          const modelList = await discovery.discover(resolveApiKey());
           const models = modelList.map((m: any) => ({
             id: typeof m === "string" ? m : m.id,
             object: "model",

@@ -9,11 +9,10 @@
  * When request completes:
  *   {"id":"<id>","done":true,"exitCode":0|1}
  *
- * AGENT CACHE:
- * - Maintains a Map keyed `${model}|${cwd}` -> Agent instance
- * - Agent.send(prompt, { local: { force: true } }) is called for each request
- *   so each send() starts fresh (force: true expires prior persistent run)
- * - This avoids Agent.create overhead (~1s) for requests with same model+cwd
+ * OPERATIONS:
+ * - default: {"id","model","cwd","prompt"} -> runs a fresh Agent per request
+ *   (no caching: conversation state must stay in OpenCode, see handleRequest)
+ * - {"id","op":"listModels"} -> emits {"type":"models","models":[{id,name}]}
  *
  * Usage:
  *   echo '{"id":"r1","model":"auto","cwd":".","prompt":"hello"}' | CURSOR_API_KEY=... node sdk-runner.mjs
@@ -23,8 +22,9 @@
  * Lifecycle: reads stdin indefinitely; on EOF, disposes agents and exits 0.
  */
 
-// Import Agent dynamically after API key check to accelerate boot time
+// Import Agent and Cursor dynamically after API key check to accelerate boot time
 let Agent;
+let Cursor;
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -141,6 +141,37 @@ function emitEvent(id, event) {
   process.stdout.write(JSON.stringify({ id, event }) + "\n");
 }
 
+// ─── List Models Handler ───────────────────────────────────────────────────
+/**
+ * Handle a listModels request: call Cursor.models.list() and emit wrapped events.
+ */
+async function handleListModels(id) {
+  try {
+    console.error(`[sdk-runner] listModels request ${id}`);
+    
+    const models = await Cursor.models.list();
+    
+    const modelList = models.map((m) => ({
+      id: m.id,
+      name: m.displayName || m.id,
+    }));
+    
+    const event = {
+      type: "models",
+      models: modelList,
+    };
+    
+    emitEvent(id, event);
+    console.error(`[sdk-runner] listModels request ${id} complete (${models.length} models)`);
+    emitDone(id, 0);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[sdk-runner] listModels request ${id} error: ${message}`);
+    emitErrorEvent(id, message);
+    emitDone(id, 1);
+  }
+}
+
 // ─── Request Handler ────────────────────────────────────────────────────────
 
 /**
@@ -229,6 +260,7 @@ async function main() {
     try {
       const sdkModule = await import("@cursor/sdk");
       Agent = sdkModule.Agent;
+      Cursor = sdkModule.Cursor;
     } catch (err) {
       console.error(`[sdk-runner] Failed to import @cursor/sdk: ${err.message}`);
       console.error("[sdk-runner] Note: sqlite3 native bindings may be incompatible with this platform");
@@ -242,14 +274,28 @@ async function main() {
     const inFlight = new Set();
 
     const dispatch = (request) => {
-      const p = handleRequest(apiKey, request)
-        .catch((err) => {
-          const id = request?.id || "unknown";
-          console.error(`[sdk-runner] Unhandled error processing request ${id}: ${err.message}`);
-          emitErrorEvent(id, `Unhandled error: ${err.message}`);
-          emitDone(id, 1);
-        })
-        .finally(() => inFlight.delete(p));
+      let p;
+      if (request.op === "listModels") {
+        // Handle listModels operation
+        p = handleListModels(request.id)
+          .catch((err) => {
+            const id = request?.id || "unknown";
+            console.error(`[sdk-runner] Unhandled error in listModels ${id}: ${err.message}`);
+            emitErrorEvent(id, `Unhandled error: ${err.message}`);
+            emitDone(id, 1);
+          })
+          .finally(() => inFlight.delete(p));
+      } else {
+        // Handle regular agent request
+        p = handleRequest(apiKey, request)
+          .catch((err) => {
+            const id = request?.id || "unknown";
+            console.error(`[sdk-runner] Unhandled error processing request ${id}: ${err.message}`);
+            emitErrorEvent(id, `Unhandled error: ${err.message}`);
+            emitDone(id, 1);
+          })
+          .finally(() => inFlight.delete(p));
+      }
       inFlight.add(p);
     };
 
