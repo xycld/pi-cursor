@@ -14,11 +14,19 @@
  *   (no caching: conversation state must stay in OpenCode, see handleRequest)
  * - {"id","op":"listModels"} -> emits {"type":"models","models":[{id,name}]}
  *
+ * ENVIRONMENT VARIABLES:
+ * - CURSOR_API_KEY: Required. API key from cursor.com/settings.
+ * - CURSOR_ACP_SETTING_SOURCES: (optional) CSV of setting sources to load.
+ *   Defaults to empty (isolated mode: no Cursor env rules/skills/MCP per request).
+ *   Examples: "all" (load everything), "user,project" (load user + project rules).
+ *   See @cursor/sdk SettingSource type: "project"|"user"|"team"|"mdm"|"plugins"|"all".
+ *
  * Usage:
  *   echo '{"id":"r1","model":"auto","cwd":".","prompt":"hello"}' | CURSOR_API_KEY=... node sdk-runner.mjs
+ *   CURSOR_ACP_SETTING_SOURCES="user,project" CURSOR_API_KEY=... node sdk-runner.mjs < requests.ndjson
  *
  * Output: NDJSON wrapped events to stdout (one per line).
- * Diagnostics: console.error only (never stdout).
+ * Diagnostics and timings: console.error only (never stdout).
  * Lifecycle: reads stdin indefinitely; on EOF, disposes agents and exits 0.
  */
 
@@ -29,6 +37,31 @@ let Cursor;
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 const STREAM_JSON_EVENT_BUFFER_SIZE = 64 * 1024; // 64KB for line buffering
+
+/**
+ * Parse CURSOR_ACP_SETTING_SOURCES env var (comma-separated, space-trimmed).
+ * If undefined or empty, return [] (isolated: no Cursor env rules/skills/MCP per request).
+ * Examples: "all" → ["all"], "user,project" → ["user","project"], "" → [].
+ */
+const SETTING_SOURCES = (() => {
+  const raw = process.env.CURSOR_ACP_SETTING_SOURCES ?? "";
+  if (!raw.trim()) return [];
+  return raw.split(",").map((s) => s.trim()).filter(Boolean);
+})();
+
+// ─── Protocol stdout protection ─────────────────────────────────────────────
+// The Cursor SDK writes its own internal logs to process.stdout, which would
+// pollute our NDJSON protocol. Redirect any stdout writes that don't come from
+// our emit helpers to stderr, and keep a private handle to the real stdout.
+const protocolWrite = process.stdout.write.bind(process.stdout);
+process.stdout.write = (chunk, ...args) => process.stderr.write(chunk, ...args);
+
+/**
+ * Write a line to the real (protocol) stdout.
+ */
+function writeProtocolLine(line) {
+  return protocolWrite(line);
+}
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
 
@@ -124,21 +157,21 @@ function emitErrorEvent(id, message) {
     is_error: true,
     error: { message },
   };
-  process.stdout.write(JSON.stringify({ id, event }) + "\n");
+  writeProtocolLine(JSON.stringify({ id, event }) + "\n");
 }
 
 /**
  * Emit request completion marker.
  */
 function emitDone(id, exitCode = 0) {
-  process.stdout.write(JSON.stringify({ id, done: true, exitCode }) + "\n");
+  writeProtocolLine(JSON.stringify({ id, done: true, exitCode }) + "\n");
 }
 
 /**
  * Emit a wrapped NDJSON event.
  */
 function emitEvent(id, event) {
-  process.stdout.write(JSON.stringify({ id, event }) + "\n");
+  writeProtocolLine(JSON.stringify({ id, event }) + "\n");
 }
 
 // ─── List Models Handler ───────────────────────────────────────────────────
@@ -197,22 +230,34 @@ async function handleRequest(apiKey, request) {
   // shared Agent would also interleave. The persistent process still saves
   // the Node boot + SDK import cost (~2-3s) on every request after the first.
   let agent = null;
+  const timelineStart = Date.now();
   try {
+    // Timing: Agent.create
+    const createStart = Date.now();
     agent = await Agent.create({
       apiKey,
       model: { id: model },
       mode: "agent",
-      local: { cwd, settingSources: ["all"] },
+      local: { cwd, settingSources: SETTING_SOURCES },
     });
+    const createMs = Date.now() - createStart;
     console.error(`[sdk-runner] Agent ready, sending prompt for request ${id}`);
 
+    // Timing: agent.send() until first event
+    const sendStart = Date.now();
     const run = await agent.send(prompt);
 
     let sawFinished = false;
     let eventCount = 0;
+    let firstEventMs = null;
 
     console.error(`[sdk-runner] Streaming events for request ${id}...`);
     for await (const msg of run.stream()) {
+      // Capture timing of first event
+      if (firstEventMs === null) {
+        firstEventMs = Date.now() - sendStart;
+      }
+
       if (++eventCount <= 3 || eventCount % 50 === 0) {
         console.error(`[sdk-runner] Request ${id} event ${eventCount}: type=${msg?.type}`);
       }
@@ -228,11 +273,15 @@ async function handleRequest(apiKey, request) {
       emitEvent(id, successEvent);
     }
 
+    const totalMs = Date.now() - timelineStart;
     console.error(`[sdk-runner] Request ${id} complete (${eventCount} events)`);
+    console.error(`[sdk-runner] timings ${id}: create=${createMs}ms firstEvent=${firstEventMs ?? "N/A"}ms total=${totalMs}ms`);
     emitDone(id, 0);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const totalMs = Date.now() - timelineStart;
     console.error(`[sdk-runner] Request ${id} error: ${message}`);
+    console.error(`[sdk-runner] timings ${id}: total=${totalMs}ms (error)`);
     emitErrorEvent(id, message);
     emitDone(id, 1);
   } finally {
@@ -254,6 +303,9 @@ async function main() {
       console.error("[sdk-runner] CURSOR_API_KEY not set");
       process.exit(1);
     }
+
+    // Log settingSources config at boot
+    console.error(`[sdk-runner] settingSources: ${JSON.stringify(SETTING_SOURCES)}`);
 
     // Import Agent dynamically now that API key is validated
     // This accelerates boot time if the runner is forked without a valid key
@@ -330,7 +382,7 @@ async function main() {
     console.error("[sdk-runner] All requests processed, shutting down");
 
     // Flush stdout before exiting
-    await new Promise((resolve) => process.stdout.write("", resolve));
+    await new Promise((resolve) => protocolWrite("", resolve));
     process.exit(0);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

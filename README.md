@@ -242,6 +242,8 @@ flowchart TB
 
 **How it works:** A persistent Node.js child process (`scripts/sdk-runner.mjs`) runs `@cursor/sdk` on behalf of the proxy. This replaces the old `cursor-agent` binary (removed in Cursor >= 0.43). The SDK runs in a separate Node process because its ConnectRPC/HTTP2 stack hangs inside OpenCode's embedded Bun runtime. The runner emits NDJSON `StreamJsonEvent` objects, which the proxy converts to OpenAI-compatible SSE format. Note: per-request latency (~6s) is dominated by the SDK's `Agent.create` + `send` calls themselves.
 
+By default, the Agent runs in isolated mode (`settingSources: []`), loading no rules, skills, or MCP servers from the Cursor environment. This avoids duplicate instructions between Cursor and OpenCode and reduces request latency. To restore the previous behavior (loading all Cursor env settings), set `CURSOR_ACP_SETTING_SOURCES=all`. You can also specify a subset: `CURSOR_ACP_SETTING_SOURCES=user,project` loads only user and project rules.
+
 Default tool-loop mode: `CURSOR_ACP_TOOL_LOOP_MODE=opencode`. Details: [docs/architecture/runtime-tool-loop.md](docs/architecture/runtime-tool-loop.md).
 
 ## Alternatives
