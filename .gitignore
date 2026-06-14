@@ -32,6 +32,9 @@ docs/reviews/
 AGENTS.md
 TOOL_SMOKE.md
 
+# CodeRabbit config must remain tracked so PR reviews work
+!.coderabbit.yaml
+
 # Local development and debugging
 .env
 .atl/

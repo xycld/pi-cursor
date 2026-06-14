@@ -1,0 +1,77 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration for Nomadcxx/opencode-cursor
+# This file MUST remain tracked; do not add it to .gitignore.
+
+language: en
+
+early_access: false
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  review_status: true
+  commit_status: true
+  fail_commit_status: false
+  high_level_summary: true
+  poem: false
+  auto_title_placeholder: ""
+  auto_summary: true
+  auto_summary_generation: true
+  path_instructions:
+    - path: "src/**/*.ts"
+      instructions: |
+        This is a TypeScript OpenCode plugin. Prefer explicit types over `any`.
+        Avoid adding new dependencies without justification.
+        Changes to auth handling (src/auth.ts, src/provider.ts) must include
+        corresponding tests and must not log or persist raw credentials.
+    - path: "src/proxy/**/*.ts"
+      instructions: |
+        Proxy code handles streaming tool calls. Ensure backpressure and error
+        propagation are preserved. Add integration tests for new streaming paths.
+    - path: "src/tools/**/*.ts"
+      instructions: |
+        Tool executors should validate inputs and surface actionable error
+        messages. Add unit tests for new tools.
+    - path: "tests/**/*.ts"
+      instructions: |
+        Tests should be deterministic and not depend on external network state.
+        Mock Cursor-agent / OAuth endpoints.
+    - path: "cmd/**/*.go"
+      instructions: |
+        Go CLI code should handle context cancellation and return non-zero exit
+        codes on fatal errors. Keep `main` packages small.
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+    base_branches:
+      - main
+    ignore_title_keywords:
+      - "[skip review]"
+      - "[wip]"
+  tools:
+    eslint:
+      enabled: true
+    prettier:
+      enabled: true
+    # CodeRabbit does not run the test suite; it only reviews code.
+    # Keep these disabled unless you want integration noise.
+    jest:
+      enabled: false
+    vitest:
+      enabled: false
+  finishing_touches:
+    docstrings:
+      enabled: false
+    unit_tests:
+      enabled: false
+    simplify:
+      enabled: false
+
+chat:
+  auto_reply: true
+  integrations:
+    linear:
+      enabled: false
+    jira:
+      enabled: false
