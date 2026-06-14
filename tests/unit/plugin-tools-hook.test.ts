@@ -216,6 +216,28 @@ describe("Plugin tool hook", () => {
     }
   });
 
+  it("rejects oc_write partial overwrites of existing files", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "plugin-hook-oc-write-partial-"));
+    try {
+      const target = join(projectDir, "file.txt");
+      const hooks = await CursorPlugin(createMockInput(projectDir));
+      const { writeFileSync } = await import("fs");
+      const original = Array.from({ length: 100 }, (_, index) => String(index + 1)).join("\n") + "\n";
+      writeFileSync(target, original, "utf-8");
+
+      await expect(
+        hooks.tool?.oc_write?.execute(
+          { path: target, content: "test test" },
+          createToolContext(projectDir, projectDir),
+        ),
+      ).rejects.toThrow("refusing suspicious partial overwrite");
+
+      expect(readFileSync(target, "utf-8")).toBe(original);
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it("pins non-config workspace per session and reuses it when later context loses worktree", async () => {
     const projectDir = mkdtempSync(join(tmpdir(), "plugin-hook-session-pin-project-"));
     const xdgConfigHome = mkdtempSync(join(tmpdir(), "plugin-hook-session-pin-xdg-"));

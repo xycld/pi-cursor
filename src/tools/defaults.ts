@@ -135,6 +135,10 @@ export function registerDefaultTools(registry: ToolRegistry): void {
         content: {
           type: "string",
           description: "Content to write to the file"
+        },
+        force: {
+          type: "boolean",
+          description: "Set true only when intentionally replacing an existing file with complete content"
         }
       },
       required: ["path", "content"]
@@ -146,10 +150,24 @@ export function registerDefaultTools(registry: ToolRegistry): void {
     try {
       const filePath = args.path as string;
       const content = args.content as string;
+      const force = args.force === true;
       // Ensure directory exists
       const dir = path.dirname(filePath);
       if (!fs.existsSync(dir)) {
         fs.mkdirSync(dir, { recursive: true });
+      }
+
+      if (!force && fs.existsSync(filePath)) {
+        const existing = fs.readFileSync(filePath, "utf-8");
+        const suspicious = detectSuspiciousPartialOverwrite(existing, content);
+        if (suspicious) {
+          throw new Error(
+            `write: refusing suspicious partial overwrite of existing file ${filePath} `
+              + `(${suspicious.existingLines} lines -> ${suspicious.nextLines} lines). `
+              + "write replaces the whole file; use edit with old_string/new_string for targeted changes, "
+              + "or pass force: true only when intentionally replacing the full file.",
+          );
+        }
       }
 
       fs.writeFileSync(filePath, content, "utf-8");
@@ -536,6 +554,39 @@ function resolveEditArguments(args: Record<string, unknown>): {
     old_string: oldString,
     new_string: newString,
   };
+}
+
+function detectSuspiciousPartialOverwrite(
+  existing: string,
+  next: string,
+): { existingLines: number; nextLines: number } | null {
+  if (process.env.CURSOR_ACP_WRITE_OVERWRITE_GUARD === "false") {
+    return null;
+  }
+  if (existing.length === 0) {
+    return null;
+  }
+
+  const existingLines = countLogicalLines(existing);
+  const nextLines = countLogicalLines(next);
+  if (existingLines < 5) {
+    return null;
+  }
+
+  const lineShrink = nextLines <= Math.max(3, Math.floor(existingLines * 0.1));
+  const byteShrink = next.length <= Math.max(120, Math.floor(existing.length * 0.1));
+  return lineShrink && byteShrink ? { existingLines, nextLines } : null;
+}
+
+function countLogicalLines(value: string): number {
+  if (value.length === 0) {
+    return 0;
+  }
+  const withoutTrailingNewline = value.endsWith("\n") ? value.slice(0, -1) : value;
+  if (withoutTrailingNewline.length === 0) {
+    return 1;
+  }
+  return withoutTrailingNewline.split("\n").length;
 }
 
 function resolveBashCommand(args: Record<string, unknown>): string | null {

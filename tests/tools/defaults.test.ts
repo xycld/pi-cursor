@@ -148,6 +148,81 @@ describe("Default Tools", () => {
     fs.unlinkSync(tmpFile);
   });
 
+  it("regression: refuses suspicious partial overwrites of existing files", async () => {
+    const registry = new ToolRegistry();
+    registerDefaultTools(registry);
+    const executor = new LocalExecutor(registry);
+
+    const fs = await import("fs");
+    const tmpFile = `/tmp/test-write-partial-overwrite-${Date.now()}.txt`;
+    const original = Array.from({ length: 100 }, (_, index) => String(index + 1)).join("\n") + "\n";
+    fs.writeFileSync(tmpFile, original, "utf-8");
+
+    try {
+      const result = await executeWithChain([executor], "write", {
+        path: tmpFile,
+        content: "test test",
+      });
+
+      expect(result.status).toBe("error");
+      expect(result.error).toContain("refusing suspicious partial overwrite");
+      expect(fs.readFileSync(tmpFile, "utf-8")).toBe(original);
+    } finally {
+      fs.unlinkSync(tmpFile);
+    }
+  });
+
+  it("regression: refuses partial overwrites of smaller multi-line files", async () => {
+    const registry = new ToolRegistry();
+    registerDefaultTools(registry);
+    const executor = new LocalExecutor(registry);
+
+    const fs = await import("fs");
+    const tmpFile = `/tmp/test-write-small-partial-overwrite-${Date.now()}.txt`;
+    const original = "one\ntwo\nthree\nfour\nfive\n";
+    fs.writeFileSync(tmpFile, original, "utf-8");
+
+    try {
+      const result = await executeWithChain([executor], "write", {
+        path: tmpFile,
+        content: "changed",
+      });
+
+      expect(result.status).toBe("error");
+      expect(result.error).toContain("refusing suspicious partial overwrite");
+      expect(fs.readFileSync(tmpFile, "utf-8")).toBe(original);
+    } finally {
+      fs.unlinkSync(tmpFile);
+    }
+  });
+
+  it("allows forced overwrites when the caller intentionally replaces an existing file", async () => {
+    const registry = new ToolRegistry();
+    registerDefaultTools(registry);
+    const executor = new LocalExecutor(registry);
+
+    const fs = await import("fs");
+    const tmpFile = `/tmp/test-write-force-overwrite-${Date.now()}.txt`;
+    fs.writeFileSync(
+      tmpFile,
+      Array.from({ length: 100 }, (_, index) => String(index + 1)).join("\n") + "\n",
+      "utf-8",
+    );
+
+    try {
+      const result = await executeWithChain([executor], "write", {
+        path: tmpFile,
+        content: "short replacement",
+        force: true,
+      });
+
+      expect(result.status).toBe("success");
+      expect(fs.readFileSync(tmpFile, "utf-8")).toBe("short replacement");
+    } finally {
+      fs.unlinkSync(tmpFile);
+    }
+  });
+
   it("should execute edit tool", async () => {
     const registry = new ToolRegistry();
     registerDefaultTools(registry);
