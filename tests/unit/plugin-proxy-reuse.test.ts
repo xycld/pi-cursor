@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { isReusableProxyHealthPayload, normalizeWorkspaceForCompare } from "../../src/plugin.js";
+import {
+  fetchProxyHealthWithTimeout,
+  isReusableProxyHealthPayload,
+  normalizeWorkspaceForCompare,
+} from "../../src/plugin.js";
 
 describe("proxy health reuse guard", () => {
   test("rejects payloads without ok=true", () => {
@@ -50,6 +54,33 @@ describe("proxy health reuse guard", () => {
         "/tmp/project-b",
       ),
     ).toBe(false);
+  });
+
+  test("aborts hanging proxy health checks", async () => {
+    const originalFetch = globalThis.fetch;
+    let aborted = false;
+
+    globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+      expect(String(url)).toBe("http://127.0.0.1:32124/health");
+      const signal = init?.signal;
+      expect(signal).toBeDefined();
+
+      return new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => {
+          aborted = true;
+          reject(new DOMException("Aborted", "AbortError"));
+        });
+      });
+    }) as typeof fetch;
+
+    try {
+      const result = await fetchProxyHealthWithTimeout("http://127.0.0.1:32124/health", 5);
+
+      expect(result).toBeNull();
+      expect(aborted).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
 });

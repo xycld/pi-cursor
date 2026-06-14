@@ -170,6 +170,7 @@ export function shouldProcessModel(model: string | undefined): boolean {
 const CURSOR_PROXY_HOST = "127.0.0.1";
 const CURSOR_PROXY_DEFAULT_PORT = 32124;
 const CURSOR_PROXY_DEFAULT_BASE_URL = `http://${CURSOR_PROXY_HOST}:${CURSOR_PROXY_DEFAULT_PORT}/v1`;
+const CURSOR_PROXY_HEALTH_TIMEOUT_MS = 3000;
 const REUSE_EXISTING_PROXY = process.env.CURSOR_ACP_REUSE_EXISTING_PROXY !== "false";
 
 // Stored API key from auth loader (OpenCode auth store)
@@ -448,6 +449,23 @@ export function isReusableProxyHealthPayload(payload: any, workspaceDirectory: s
     return false;
   }
   return normalizeWorkspaceForCompare(payload.workspaceDirectory) === normalizeWorkspaceForCompare(workspaceDirectory);
+}
+
+export async function fetchProxyHealthWithTimeout(
+  url: string,
+  timeoutMs: number = CURSOR_PROXY_HEALTH_TIMEOUT_MS,
+): Promise<Response | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  if (typeof (timeout as any).unref === "function") {
+    (timeout as any).unref();
+  }
+
+  try {
+    return await fetch(url, { signal: controller.signal }).catch(() => null);
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 const FORCE_TOOL_MODE = process.env.CURSOR_ACP_FORCE !== "false";
@@ -1229,7 +1247,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
   if (REUSE_EXISTING_PROXY) {
     // Check if another process already started a proxy on the default port
     try {
-      const res = await fetch(`http://${CURSOR_PROXY_HOST}:${CURSOR_PROXY_DEFAULT_PORT}/health`).catch(() => null);
+      const res = await fetchProxyHealthWithTimeout(`http://${CURSOR_PROXY_HOST}:${CURSOR_PROXY_DEFAULT_PORT}/health`);
       if (res && res.ok) {
         const payload = await res.json().catch(() => null);
         if (isReusableProxyHealthPayload(payload, workspaceDirectory)) {
@@ -1686,7 +1704,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
     if (REUSE_EXISTING_PROXY) {
       // Port in use - check if it's our proxy
       try {
-        const res = await fetch(`http://${CURSOR_PROXY_HOST}:${CURSOR_PROXY_DEFAULT_PORT}/health`).catch(() => null);
+        const res = await fetchProxyHealthWithTimeout(`http://${CURSOR_PROXY_HOST}:${CURSOR_PROXY_DEFAULT_PORT}/health`);
         if (res && res.ok) {
           const payload = await res.json().catch(() => null);
           if (isReusableProxyHealthPayload(payload, workspaceDirectory)) {
