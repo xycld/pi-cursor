@@ -122,7 +122,9 @@ function rotateIfNeeded(): void {
     logBytesWritten = 0;
     openLogStream();
   } catch {
-    // Rotation failed — keep writing to current file
+    if (!logFileError && !logStream) {
+      openLogStream();
+    }
   }
 }
 
@@ -133,6 +135,7 @@ function writeToFile(message: string): void {
   if (logFileError || !logStream) return;
 
   rotateIfNeeded();
+  if (logFileError || !logStream) return;
 
   const timestamp = new Date().toISOString();
   const line = `${timestamp} ${message}\n`;
