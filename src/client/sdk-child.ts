@@ -32,6 +32,24 @@ import { createLogger } from "../utils/logger.js";
 import { randomBytes } from "node:crypto";
 
 const log = createLogger("sdk-child");
+const textEncoder = new TextEncoder();
+
+const EVENT_KEY = '"event":';
+
+/**
+ * Extract the inner event JSON from a wrapper line like {"id":"...","event":{...}}
+ * without re-serializing the parsed object. Falls back to the full line if
+ * the format is unexpected.
+ */
+/** @internal Exported for testing only. */
+export function extractEventJson(line: string): string {
+  const idx = line.indexOf(EVENT_KEY);
+  if (idx < 0) return line;
+  const start = idx + EVENT_KEY.length;
+  const end = line.lastIndexOf("}");
+  if (end <= start) return line;
+  return line.substring(start, end);
+}
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
 
@@ -250,9 +268,8 @@ class SdkRunnerSingleton {
           pending.promiseResolver(wrapped.exitCode ?? 0);
           this.pendingRequests.delete(requestId);
         } else if (wrapped.event) {
-          // Emit unwrapped event
-          const event = JSON.stringify(wrapped.event) + "\n";
-          pending.controller.enqueue(new TextEncoder().encode(event));
+          const eventJson = extractEventJson(line);
+          pending.controller.enqueue(textEncoder.encode(eventJson + "\n"));
         }
       } catch (err) {
         log.error("Failed to parse wrapped response line", {
