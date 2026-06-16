@@ -241,4 +241,20 @@ describe("buildPromptFromMessages", () => {
     expect(result1).not.toContain("write: Write");
     expect(result2).toContain("write: Write");
   });
+
+  it("invalidates cache when same-named tool changes schema", () => {
+    const tools1 = [
+      { type: "function", function: { name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } } } } },
+    ];
+    const tools2 = [
+      { type: "function", function: { name: "read", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" }, encoding: { type: "string" } } } } },
+    ];
+    const msgs = [{ role: "user", content: "Hello" }];
+
+    const result1 = buildPromptFromMessages(msgs, tools1);
+    const result2 = buildPromptFromMessages(msgs, tools2);
+
+    expect(result1).not.toBe(result2);
+    expect(result2).toContain("encoding");
+  });
 });

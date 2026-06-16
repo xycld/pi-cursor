@@ -14,10 +14,17 @@ export function _resetToolSchemaCache(): void {
 
 function buildToolFingerprint(tools: Array<any>): string {
   if (tools.length === 0) return "";
-  // Fast fingerprint: tool count + sorted names. Tools with the same names
-  // and count will have the same schemas in practice.
-  const names = tools.map((t: any) => (t.function || t).name || "?").sort();
-  return `${names.length}:${names.join(",")}`;
+  // Include names + descriptions + parameter key counts to detect schema changes
+  // without the cost of full JSON.stringify on every request.
+  const parts = tools.map((t: any) => {
+    const fn = t.function || t;
+    const name = fn.name || "?";
+    const desc = fn.description || "";
+    const paramKeys = fn.parameters ? Object.keys(fn.parameters.properties || {}).length : 0;
+    return `${name}:${desc.length}:${paramKeys}`;
+  });
+  parts.sort();
+  return `${parts.length}:${parts.join("|")}`;
 }
 
 function buildToolSchemaBlock(tools: Array<any>): string {
