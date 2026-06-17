@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("proxy:prompt-builder");
@@ -12,19 +13,27 @@ export function _resetToolSchemaCache(): void {
   _cachedToolBlock = "";
 }
 
+/** Short, collision-resistant digest used in the tool schema fingerprint. */
+function shortHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 8);
+}
+
 /** Build a compact fingerprint of the tool schema for cache validation. */
 export function buildToolFingerprint(tools: Array<any>): string {
   if (tools.length === 0) return "";
   // Include names + descriptions + parameter names + required fields to detect
   // schema changes without the cost of full JSON.stringify on every request.
+  // The description is hashed (not length-only) so edits that preserve length
+  // still invalidate the cache; required is copied before sorting so the
+  // caller's schema array is not mutated in place.
   const parts = tools.map((t: any) => {
     const fn = t.function || t;
     const name = fn.name || "?";
     const desc = fn.description || "";
     const paramProps = fn.parameters?.properties || {};
     const paramKeys = Object.keys(paramProps).sort().join(",");
-    const required = (fn.parameters?.required || []).sort().join(",");
-    return `${name}:${desc.length}:${paramKeys}:${required}`;
+    const required = [...(fn.parameters?.required || [])].sort().join(",");
+    return `${name}:${shortHash(desc)}:${paramKeys}:${required}`;
   });
   parts.sort();
   return `${parts.length}:${parts.join("|")}`;

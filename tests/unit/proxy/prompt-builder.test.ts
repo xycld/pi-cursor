@@ -257,4 +257,36 @@ describe("buildPromptFromMessages", () => {
     expect(result1).not.toBe(result2);
     expect(result2).toContain("encoding");
   });
+
+  it("invalidates cache when a tool description changes but keeps the same length", () => {
+    const tools1 = [
+      { type: "function", function: { name: "read", description: "Read a file", parameters: { type: "object" } } },
+    ];
+    // Same length (11 chars), different content: a length-only fingerprint
+    // would falsely hit the cache and resume with a stale tool contract.
+    const tools2 = [
+      { type: "function", function: { name: "read", description: "Load a file", parameters: { type: "object" } } },
+    ];
+    const msgs = [{ role: "user", content: "Hello" }];
+
+    const result1 = buildPromptFromMessages(msgs, tools1);
+    const result2 = buildPromptFromMessages(msgs, tools2);
+
+    expect(result1).not.toBe(result2);
+    expect(result1).toContain("read: Read a file");
+    expect(result2).toContain("read: Load a file");
+  });
+
+  it("does not mutate the caller's required parameter array", () => {
+    const required = ["path", "encoding"];
+    const tools = [
+      { type: "function", function: { name: "read", description: "Read", parameters: { type: "object", required } } },
+    ];
+    const msgs = [{ role: "user", content: "Hello" }];
+
+    buildPromptFromMessages(msgs, tools);
+
+    // The caller's array must remain in its original order, not sorted in place.
+    expect(required).toEqual(["path", "encoding"]);
+  });
 });
