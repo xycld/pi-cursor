@@ -109,6 +109,25 @@ export function isRecoverableError(error: ParsedError): boolean {
   return error.recoverable;
 }
 
+/** Resume-specific failure signatures from cursor-agent stderr/stdout. */
+const RESUME_FAILURE_PATTERNS = [
+  /session\s+(?:not\s+found|expired|invalid)/i,
+  /chat\s+(?:not\s+found|expired|invalid)/i,
+  /resume\s+(?:failed|error|invalid)/i,
+  /no\s+active\s+session/i,
+];
+
+/**
+ * Decide whether a cursor-agent failure is specific to the resumed session.
+ * Transient errors (network, auth, OOM, signal kills) should not evict a
+ * valid chat ID; only failures that indicate the session itself is gone.
+ */
+export function isResumeSpecificFailure(stderr: string): boolean {
+  const text = typeof stderr === "string" ? stderr : String(stderr ?? "");
+  const clean = stripAnsi(text);
+  return RESUME_FAILURE_PATTERNS.some((pattern) => pattern.test(clean));
+}
+
 /**
  * Format parsed error for user display
  */

@@ -70,6 +70,34 @@ describe("buildIncrementalPrompt", () => {
     );
   });
 
+  it("serializes non-string tool result content", () => {
+    const messages = [
+      { role: "user", content: "Read foo.txt" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_1", function: { name: "read", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: { status: "ok", data: [1, 2, 3] } },
+    ];
+    const prompt = buildIncrementalPrompt(messages);
+    expect(prompt).toContain('TOOL_RESULT (call_id: call_1): {"status":"ok","data":[1,2,3]}');
+  });
+
+  it("falls back to unknown call_id when tool_call_id is missing", () => {
+    const messages = [
+      { role: "user", content: "Read foo.txt" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "call_1", function: { name: "read", arguments: "{}" } }],
+      },
+      { role: "tool", content: "file contents" },
+    ];
+    const prompt = buildIncrementalPrompt(messages);
+    expect(prompt).toContain("TOOL_RESULT (call_id: unknown): file contents");
+  });
+
   it("returns null when last message is assistant without tool results", () => {
     const messages = [
       { role: "user", content: "Hello" },

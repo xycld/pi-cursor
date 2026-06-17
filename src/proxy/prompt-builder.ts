@@ -12,7 +12,7 @@ export function _resetToolSchemaCache(): void {
   _cachedToolBlock = "";
 }
 
-function buildToolFingerprint(tools: Array<any>): string {
+export function buildToolFingerprint(tools: Array<any>): string {
   if (tools.length === 0) return "";
   // Include names + descriptions + parameter key counts to detect schema changes
   // without the cost of full JSON.stringify on every request.

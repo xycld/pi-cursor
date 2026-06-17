@@ -26,9 +26,9 @@ import {
 } from "./usage.js";
 import { createLogger } from "./utils/logger";
 import { RequestPerf } from "./utils/perf";
-import { parseAgentError, formatErrorForUser, stripAnsi } from "./utils/errors";
-import { buildPromptFromMessages } from "./proxy/prompt-builder.js";
-import { buildIncrementalPrompt } from "./proxy/incremental-prompt.js";
+import { parseAgentError, formatErrorForUser, stripAnsi, isResumeSpecificFailure } from "./utils/errors";
+import { buildPromptFromMessages, buildToolFingerprint } from "./proxy/prompt-builder.js";
+import { buildIncrementalPrompt, type ProxyMessage } from "./proxy/incremental-prompt.js";
 import {
   buildSessionKey,
   clearResumeChatId,
@@ -231,6 +231,10 @@ function resolveBackendForRequest(sdkApiKey: string | undefined): CursorRuntimeB
   });
 }
 
+/**
+ * Build the command array for invoking cursor-agent.
+ * Appends `--resume <chatId>` only when a chat ID is supplied.
+ */
 export function buildCursorAgentCommand(
   model: string,
   workspaceDirectory: string,
@@ -257,6 +261,19 @@ export function buildCursorAgentCommand(
 }
 
 /**
+ * Resolved prompt metadata returned by {@link resolvePromptForBackend}.
+ */
+export interface ResolvedPrompt {
+  prompt: string;
+  resumeChatId?: string;
+  sessionKey?: string;
+  usedIncremental: boolean;
+  contentPrefix?: string;
+  toolFingerprint?: string;
+  subagentFingerprint?: string;
+}
+
+/**
  * Resolve the prompt to send to the backend.
  *
  * Only the cursor-agent backend supports `--resume`. When a chatId is available
@@ -270,26 +287,30 @@ export function buildCursorAgentCommand(
  */
 export function resolvePromptForBackend(input: {
   backend: CursorRuntimeBackend;
-  messages: Array<any>;
+  messages: Array<ProxyMessage>;
   tools: Array<any>;
   subagentNames: string[];
   model: string;
   workspaceDirectory: string;
-}): {
-  prompt: string;
-  resumeChatId?: string;
-  sessionKey?: string;
-  usedIncremental: boolean;
-  contentPrefix?: string;
-} {
+}): ResolvedPrompt {
   const fullPrompt = buildPromptFromMessages(input.messages, input.tools, input.subagentNames);
   if (input.backend !== "cursor-agent" || !isSessionResumeEnabled()) {
     return { prompt: fullPrompt, usedIncremental: false };
   }
 
-  const { anchor, contentPrefix } = deriveConversationAnchor(input.messages);
+  const anchorResult = deriveConversationAnchor(input.messages);
+  if (!anchorResult) {
+    log.warn("Session resume enabled but no usable conversation anchor; skipping resume", {
+      model: input.model,
+      workspaceDirectory: input.workspaceDirectory,
+    });
+    return { prompt: fullPrompt, usedIncremental: false };
+  }
+  const { anchor, contentPrefix } = anchorResult;
   const sessionKey = buildSessionKey(input.workspaceDirectory, input.model, anchor);
-  const resumeChatId = getResumeChatId(sessionKey, contentPrefix);
+  const toolFingerprint = buildToolFingerprint(input.tools);
+  const subagentFingerprint = input.subagentNames.slice().sort().join(",");
+  const resumeChatId = getResumeChatId(sessionKey, contentPrefix, toolFingerprint, subagentFingerprint);
   if (!resumeChatId) {
     const isContinuation = input.messages.some((m: any) => m?.role === "assistant");
     if (isContinuation) {
@@ -297,7 +318,7 @@ export function resolvePromptForBackend(input: {
         sessionKey,
       });
     }
-    return { prompt: fullPrompt, sessionKey, usedIncremental: false, contentPrefix };
+    return { prompt: fullPrompt, sessionKey, usedIncremental: false, contentPrefix, toolFingerprint, subagentFingerprint };
   }
 
   const incremental = buildIncrementalPrompt(input.messages);
@@ -308,20 +329,20 @@ export function resolvePromptForBackend(input: {
       promptChars: incremental.length,
       fullPromptChars: fullPrompt.length,
     });
-    return { prompt: incremental, resumeChatId, sessionKey, usedIncremental: true, contentPrefix };
+    return { prompt: incremental, resumeChatId, sessionKey, usedIncremental: true, contentPrefix, toolFingerprint, subagentFingerprint };
   }
 
   log.info("Session resume active but incremental prompt unavailable; using full prompt", {
     sessionKey,
     resumeChatId,
   });
-  return { prompt: fullPrompt, resumeChatId, sessionKey, usedIncremental: false, contentPrefix };
+  return { prompt: fullPrompt, resumeChatId, sessionKey, usedIncremental: false, contentPrefix, toolFingerprint, subagentFingerprint };
 }
 
 /**
  * Capture `session_id` from a cursor-agent NDJSON stream event.
- * cursor-agent emits `session_id` on every stream event; the value is what
- * `--resume` accepts, so any event may seed/refresh the cache.
+ * cursor-agent stream events may carry `session_id`; when present, that value is
+ * what `--resume` accepts, so any such event may seed/refresh the cache.
  */
 export function captureResumeChatIdFromEvent(
   event: StreamJsonEvent,
@@ -329,26 +350,57 @@ export function captureResumeChatIdFromEvent(
   model: string,
   workspaceDirectory: string,
   contentPrefix?: string,
+  toolFingerprint?: string,
+  subagentFingerprint?: string,
 ): void {
   if (!sessionKey || !isSessionResumeEnabled()) return;
-  const chatId = (event as any).session_id;
+  const chatId = event.session_id;
+  if (chatId == null) return;
   if (typeof chatId === "string" && chatId.trim()) {
-    recordResumeChatId(sessionKey, chatId.trim(), model, workspaceDirectory, contentPrefix ?? "");
+    recordResumeChatId(
+      sessionKey,
+      chatId.trim(),
+      model,
+      workspaceDirectory,
+      contentPrefix ?? "",
+      toolFingerprint,
+      subagentFingerprint,
+    );
+    return;
   }
+  log.warn("cursor-agent emitted invalid session_id", {
+    type: typeof chatId,
+    length: String(chatId).length,
+    sessionKey,
+  });
 }
 
+/**
+ * Scan raw cursor-agent NDJSON output and capture the first valid `session_id`.
+ * Each line is parsed independently and delegated to the event-level capture.
+ */
 export function captureResumeChatIdFromOutput(
   output: string,
   sessionKey: string | undefined,
   model: string,
   workspaceDirectory: string,
   contentPrefix?: string,
+  toolFingerprint?: string,
+  subagentFingerprint?: string,
 ): void {
   if (!sessionKey || !isSessionResumeEnabled() || !output) return;
   for (const line of output.split("\n")) {
     const event = parseStreamJsonLine(line);
     if (event) {
-      captureResumeChatIdFromEvent(event, sessionKey, model, workspaceDirectory, contentPrefix);
+      captureResumeChatIdFromEvent(
+        event,
+        sessionKey,
+        model,
+        workspaceDirectory,
+        contentPrefix,
+        toolFingerprint,
+        subagentFingerprint,
+      );
     }
   }
 }
@@ -1018,6 +1070,8 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         sessionKey: sessionResumeKey,
         usedIncremental,
         contentPrefix: sessionResumeContentPrefix,
+        toolFingerprint: sessionResumeToolFingerprint,
+        subagentFingerprint: sessionResumeSubagentFingerprint,
       } = resolvePromptForBackend({
         backend,
         messages,
@@ -1072,7 +1126,15 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
           stdoutChars: stdout.length,
           stderrChars: stderr.length,
         });
-        captureResumeChatIdFromOutput(stdout, sessionResumeKey, model, workspaceDirectory, sessionResumeContentPrefix);
+        captureResumeChatIdFromOutput(
+          stdout,
+          sessionResumeKey,
+          model,
+          workspaceDirectory,
+          sessionResumeContentPrefix,
+          sessionResumeToolFingerprint,
+          sessionResumeSubagentFingerprint,
+        );
         if (sessionResumeKey && isSessionResumeEnabled() && !getResumeChatId(sessionResumeKey, sessionResumeContentPrefix)) {
           log.warn("Session resume enabled but no session_id captured from cursor-agent response; resume will not activate on the next turn", {
             sessionResumeKey,
@@ -1116,18 +1178,18 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         }
 
         if (exitCode !== 0) {
-          if (resumeChatId && sessionResumeKey) {
+          const errSource =
+            stderr
+            || stdout
+            || `cursor-agent exited with code ${String(exitCode ?? "unknown")} and no output`;
+          if (resumeChatId && sessionResumeKey && isResumeSpecificFailure(errSource)) {
             clearResumeChatId(sessionResumeKey);
-            log.warn("Evicting resume chatId after cursor-agent failure", {
+            log.warn("Evicting resume chatId after resume-specific cursor-agent failure", {
               sessionResumeKey,
               exitCode,
               hadResume: true,
             });
           }
-          const errSource =
-            stderr
-            || stdout
-            || `cursor-agent exited with code ${String(exitCode ?? "unknown")} and no output`;
           const parsed = parseAgentError(errSource);
           const userError = formatErrorForUser(parsed);
           log.error("cursor-cli failed", {
@@ -1224,7 +1286,15 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 if (!event) {
                   continue;
                 }
-                captureResumeChatIdFromEvent(event, sessionResumeKey, model, workspaceDirectory, sessionResumeContentPrefix);
+                captureResumeChatIdFromEvent(
+                  event,
+                  sessionResumeKey,
+                  model,
+                  workspaceDirectory,
+                  sessionResumeContentPrefix,
+                  sessionResumeToolFingerprint,
+                  sessionResumeSubagentFingerprint,
+                );
 
                 if (isResult(event)) {
                   usage = extractOpenAiUsageFromResult(event) ?? usage;
@@ -1296,7 +1366,15 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
               if (!event) {
                 continue;
               }
-              captureResumeChatIdFromEvent(event, sessionResumeKey, model, workspaceDirectory, sessionResumeContentPrefix);
+              captureResumeChatIdFromEvent(
+                  event,
+                  sessionResumeKey,
+                  model,
+                  workspaceDirectory,
+                  sessionResumeContentPrefix,
+                  sessionResumeToolFingerprint,
+                  sessionResumeSubagentFingerprint,
+                );
               if (isResult(event)) {
                 usage = extractOpenAiUsageFromResult(event) ?? usage;
               }
@@ -1358,17 +1436,17 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
 
             const exitCode = await child.exited;
             if (exitCode !== 0) {
-              if (resumeChatId && sessionResumeKey) {
+              const stderrText = await new Response(child.stderr).text();
+              const errSource = (stderrText || "").trim()
+                || `cursor-agent exited with code ${String(exitCode ?? "unknown")} and no output`;
+              if (resumeChatId && sessionResumeKey && isResumeSpecificFailure(errSource)) {
                 clearResumeChatId(sessionResumeKey);
-                log.warn("Evicting resume chatId after cursor-agent failure", {
+                log.warn("Evicting resume chatId after resume-specific cursor-agent failure", {
                   sessionResumeKey,
                   exitCode,
                   hadResume: true,
                 });
               }
-              const stderrText = await new Response(child.stderr).text();
-              const errSource = (stderrText || "").trim()
-                || `cursor-agent exited with code ${String(exitCode ?? "unknown")} and no output`;
               const parsed = parseAgentError(errSource);
               const msg = formatErrorForUser(parsed);
               log.error("cursor-cli streaming failed", {
@@ -1520,6 +1598,8 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         sessionKey: sessionResumeKey,
         usedIncremental,
         contentPrefix: sessionResumeContentPrefix,
+        toolFingerprint: sessionResumeToolFingerprint,
+        subagentFingerprint: sessionResumeSubagentFingerprint,
       } = resolvePromptForBackend({
         backend,
         messages,
@@ -1585,7 +1665,15 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
             stderrChars: stderr.length,
             spawnError: spawnErrorText != null,
           });
-          captureResumeChatIdFromOutput(stdout, sessionResumeKey, model, workspaceDirectory, sessionResumeContentPrefix);
+          captureResumeChatIdFromOutput(
+          stdout,
+          sessionResumeKey,
+          model,
+          workspaceDirectory,
+          sessionResumeContentPrefix,
+          sessionResumeToolFingerprint,
+          sessionResumeSubagentFingerprint,
+        );
           if (sessionResumeKey && isSessionResumeEnabled() && !getResumeChatId(sessionResumeKey, sessionResumeContentPrefix)) {
             log.warn("Session resume enabled but no session_id captured from cursor-agent response; resume will not activate on the next turn", {
               sessionResumeKey,
@@ -1629,20 +1717,20 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
           const completion = extractCompletionFromStream(stdout);
 
           if (code !== 0 || spawnErrorText) {
-            if (resumeChatId && sessionResumeKey) {
+            const errSource =
+              stderr
+              || stdout
+              || spawnErrorText
+              || `cursor-agent exited with code ${String(code ?? "unknown")} and no output`;
+            if (resumeChatId && sessionResumeKey && isResumeSpecificFailure(errSource)) {
               clearResumeChatId(sessionResumeKey);
-              log.warn("Evicting resume chatId after cursor-agent failure", {
+              log.warn("Evicting resume chatId after resume-specific cursor-agent failure", {
                 sessionResumeKey,
                 code,
                 spawnError: spawnErrorText != null,
                 hadResume: true,
               });
             }
-            const errSource =
-              stderr
-              || stdout
-              || spawnErrorText
-              || `cursor-agent exited with code ${String(code ?? "unknown")} and no output`;
             const parsed = parseAgentError(errSource);
             const userError = formatErrorForUser(parsed);
             log.error("cursor-cli failed", {
@@ -1760,7 +1848,15 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
             if (streamTerminated || res.writableEnded) break;
             const event = parseStreamJsonLine(line);
             if (!event) continue;
-            captureResumeChatIdFromEvent(event, sessionResumeKey, model, workspaceDirectory, sessionResumeContentPrefix);
+            captureResumeChatIdFromEvent(
+                  event,
+                  sessionResumeKey,
+                  model,
+                  workspaceDirectory,
+                  sessionResumeContentPrefix,
+                  sessionResumeToolFingerprint,
+                  sessionResumeSubagentFingerprint,
+                );
 
             if (isResult(event)) {
               usage = extractOpenAiUsageFromResult(event) ?? usage;
@@ -1842,17 +1938,17 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 stderrChars: stderrText.length,
               });
               if (childExitCode !== 0) {
-                if (resumeChatId && sessionResumeKey) {
+                const errSource =
+                  stderrText
+                  || `cursor-agent exited with code ${String(childExitCode ?? "unknown")} and no output`;
+                if (resumeChatId && sessionResumeKey && isResumeSpecificFailure(errSource)) {
                   clearResumeChatId(sessionResumeKey);
-                  log.warn("Evicting resume chatId after cursor-agent failure", {
+                  log.warn("Evicting resume chatId after resume-specific cursor-agent failure", {
                     sessionResumeKey,
                     code: childExitCode,
                     hadResume: true,
                   });
                 }
-                const errSource =
-                  stderrText
-                  || `cursor-agent exited with code ${String(childExitCode ?? "unknown")} and no output`;
                 const parsed = parseAgentError(errSource);
                 const msg = formatErrorForUser(parsed);
                 const errChunk = createChatCompletionChunk(id, created, model, msg, true);

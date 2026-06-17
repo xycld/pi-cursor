@@ -52,39 +52,52 @@ describe("session-resume", () => {
   });
 
   it("handles array-content first user message", () => {
-    const { anchor: stringAnchor } = deriveConversationAnchor([
+    const stringResult = deriveConversationAnchor([
       { role: "user", content: "Remember BETA" },
     ]);
-    const { anchor: arrayAnchor } = deriveConversationAnchor([
+    const arrayResult = deriveConversationAnchor([
       { role: "user", content: [{ type: "text", text: "Remember BETA" }] },
     ]);
-    expect(arrayAnchor).toBe(stringAnchor);
-    expect(arrayAnchor).not.toBe("default");
+    expect(arrayResult!.anchor).toBe(stringResult!.anchor);
+    expect(arrayResult!.anchor).not.toBe("default");
   });
 
-  it("falls back to default anchor when no usable user message", () => {
-    const { anchor, contentPrefix } = deriveConversationAnchor([
+  it("ignores non-text parts when deriving array-content anchor", () => {
+    const stringResult = deriveConversationAnchor([{ role: "user", content: "hello" }]);
+    const mixedResult = deriveConversationAnchor([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "hello" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,abc" } },
+        ],
+      },
+    ]);
+    expect(mixedResult!.anchor).toBe(stringResult!.anchor);
+  });
+
+  it("returns undefined when no usable user message", () => {
+    const result = deriveConversationAnchor([
       { role: "system", content: "You are helpful" },
       { role: "assistant", content: "Hi" },
     ]);
-    expect(anchor).toBe("default");
-    expect(contentPrefix).toBe("");
+    expect(result).toBeUndefined();
   });
 
-  it("falls back to default when all user messages are meta", () => {
-    const { anchor } = deriveConversationAnchor([
+  it("returns undefined when all user messages are meta", () => {
+    const result = deriveConversationAnchor([
       { role: "user", content: "Generate a brief title for this thread" },
     ]);
-    expect(anchor).toBe("default");
+    expect(result).toBeUndefined();
   });
 
   it("documents that meta substring filter can misclassify real messages", () => {
     // The substring heuristic for title-generation prompts is not precise: a real
     // user message that contains "title generator" is currently treated as meta.
-    const { anchor } = deriveConversationAnchor([
+    const result = deriveConversationAnchor([
       { role: "user", content: "I tried the title generator but it failed; remember BETA" },
     ]);
-    expect(anchor).toBe("default");
+    expect(result).toBeUndefined();
   });
 
   it("stores and retrieves chat IDs by session key", () => {
@@ -153,17 +166,19 @@ describe("session-resume", () => {
 
   it("expires entries after TTL", () => {
     const originalNow = Date.now;
-    const key = buildSessionKey("/workspace", "gpt-5", "abc123");
-    const now = 1_000_000_000_000;
-    Date.now = () => now;
-    recordResumeChatId(key, "chat-uuid-1", "gpt-5", "/workspace", "hello");
-    expect(getResumeChatId(key)).toBe("chat-uuid-1");
+    try {
+      const key = buildSessionKey("/workspace", "gpt-5", "abc123");
+      const now = 1_000_000_000_000;
+      Date.now = () => now;
+      recordResumeChatId(key, "chat-uuid-1", "gpt-5", "/workspace", "hello");
+      expect(getResumeChatId(key)).toBe("chat-uuid-1");
 
-    // Just over 1 hour later.
-    Date.now = () => now + 60 * 60 * 1000 + 1;
-    expect(getResumeChatId(key)).toBeUndefined();
-
-    Date.now = originalNow;
+      // Just over 1 hour later.
+      Date.now = () => now + 60 * 60 * 1000 + 1;
+      expect(getResumeChatId(key)).toBeUndefined();
+    } finally {
+      Date.now = originalNow;
+    }
   });
 
   it("treats prefix mismatch as a cache miss", () => {
@@ -172,5 +187,26 @@ describe("session-resume", () => {
     expect(getResumeChatId(key, "different")).toBeUndefined();
     expect(getResumeChatId(key, "hello")).toBe("chat-uuid-1");
     expect(getResumeChatId(key)).toBe("chat-uuid-1");
+  });
+
+  it("evicts entry on tool fingerprint mismatch", () => {
+    const key = buildSessionKey("/workspace", "gpt-5", "abc123");
+    recordResumeChatId(key, "chat-uuid-1", "gpt-5", "/workspace", "hello", "fp-v1");
+    expect(getResumeChatId(key, "hello", "fp-v1")).toBe("chat-uuid-1");
+    expect(getResumeChatId(key, "hello", "fp-v2")).toBeUndefined();
+  });
+
+  it("evicts entry on subagent fingerprint mismatch", () => {
+    const key = buildSessionKey("/workspace", "gpt-5", "abc123");
+    recordResumeChatId(key, "chat-uuid-1", "gpt-5", "/workspace", "hello", undefined, "agents-v1");
+    expect(getResumeChatId(key, "hello", undefined, "agents-v1")).toBe("chat-uuid-1");
+    expect(getResumeChatId(key, "hello", undefined, "agents-v2")).toBeUndefined();
+  });
+
+  it("ignores fingerprint checks when no fingerprint was recorded", () => {
+    const key = buildSessionKey("/workspace", "gpt-5", "abc123");
+    recordResumeChatId(key, "chat-uuid-1", "gpt-5", "/workspace", "hello");
+    expect(getResumeChatId(key, "hello", "any-fp")).toBe("chat-uuid-1");
+    expect(getResumeChatId(key, "hello", undefined, "any-subagent")).toBe("chat-uuid-1");
   });
 });

@@ -5,6 +5,7 @@ import {
   isRecoverableError,
   formatErrorForUser,
   stripAnsi,
+  isResumeSpecificFailure,
 } from "../../src/utils/errors.js";
 
 describe("parseAgentError", () => {
@@ -137,5 +138,58 @@ describe("stripAnsi", () => {
   it("handles non-string input", () => {
     expect(stripAnsi(42 as any)).toBe("42");
     expect(stripAnsi(null as any)).toBe("");
+  });
+});
+
+describe("isResumeSpecificFailure", () => {
+  it("detects session-not-found failures", () => {
+    expect(isResumeSpecificFailure("session not found")).toBe(true);
+    expect(isResumeSpecificFailure("session expired")).toBe(true);
+    expect(isResumeSpecificFailure("session invalid")).toBe(true);
+  });
+
+  it("detects chat expired failures", () => {
+    expect(isResumeSpecificFailure("chat expired")).toBe(true);
+    expect(isResumeSpecificFailure("chat not found")).toBe(true);
+    expect(isResumeSpecificFailure("chat invalid")).toBe(true);
+  });
+
+  it("detects resume failed failures", () => {
+    expect(isResumeSpecificFailure("resume failed")).toBe(true);
+    expect(isResumeSpecificFailure("resume error")).toBe(true);
+    expect(isResumeSpecificFailure("resume invalid")).toBe(true);
+  });
+
+  it("detects no active session failures", () => {
+    expect(isResumeSpecificFailure("no active session")).toBe(true);
+  });
+
+  it("is case insensitive", () => {
+    expect(isResumeSpecificFailure("SESSION NOT FOUND")).toBe(true);
+    expect(isResumeSpecificFailure("Chat Expired")).toBe(true);
+  });
+
+  it("does not flag transient network failures", () => {
+    expect(isResumeSpecificFailure("fetch failed")).toBe(false);
+    expect(isResumeSpecificFailure("ECONNREFUSED")).toBe(false);
+  });
+
+  it("does not flag usage/quota failures", () => {
+    expect(isResumeSpecificFailure("usage limit")).toBe(false);
+  });
+
+  it("does not flag generic errors", () => {
+    expect(isResumeSpecificFailure("something went wrong")).toBe(false);
+    expect(isResumeSpecificFailure("timeout")).toBe(false);
+  });
+
+  it("handles non-string input safely", () => {
+    expect(isResumeSpecificFailure(null as any)).toBe(false);
+    expect(isResumeSpecificFailure(undefined as any)).toBe(false);
+    expect(isResumeSpecificFailure(42 as any)).toBe(false);
+  });
+
+  it("does not flag empty strings", () => {
+    expect(isResumeSpecificFailure("")).toBe(false);
   });
 });

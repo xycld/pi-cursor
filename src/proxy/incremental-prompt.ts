@@ -4,6 +4,24 @@
  * the new turn content instead of replaying the full flattened history.
  */
 
+type TextContentPart = { type: "text"; text: string };
+type ImageContentPart = { type: "image_url"; image_url: { url: string } };
+export type ContentPart = TextContentPart | ImageContentPart | Record<string, unknown>;
+
+export type ProxyMessage = {
+  role: string;
+  content?: string | ContentPart[] | unknown;
+  tool_call_id?: string;
+  tool_calls?: Array<{
+    id?: string;
+    function?: { name?: string; arguments?: string };
+  }>;
+};
+
+/**
+ * Extract text from a message content value that may be a plain string or an
+ * array of content parts. Non-text parts (images, audio, etc.) are ignored.
+ */
 export function extractTextContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -19,7 +37,7 @@ export function extractTextContent(content: unknown): string {
  * Returns prompt text for a resumed session. Falls back to null when delta
  * mode cannot be determined safely (caller should use full prompt builder).
  */
-export function buildIncrementalPrompt(messages: Array<any>): string | null {
+export function buildIncrementalPrompt(messages: Array<ProxyMessage>): string | null {
   if (messages.length === 0) return null;
 
   const last = messages[messages.length - 1];
@@ -46,10 +64,7 @@ export function buildIncrementalPrompt(messages: Array<any>): string | null {
     if (!text.trim()) return null;
     // Mixed multimodal follow-ups must fall back to the full prompt so image/audio
     // parts are not silently dropped.
-    if (
-      Array.isArray(last.content) &&
-      last.content.some((part: any) => part?.type && part.type !== "text")
-    ) {
+    if (Array.isArray(last.content) && last.content.some((part: any) => part?.type && part.type !== "text")) {
       return null;
     }
     return text.trim();

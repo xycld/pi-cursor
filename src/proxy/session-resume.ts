@@ -8,16 +8,21 @@
  * - In-memory, non-persistent cache. Restarting the plugin loses all resume
  *   state and the next turn falls back to a full prompt.
  * - Entries expire after 1 hour (DEFAULT_TTL_MS).
- * - Cache is capped at 64 entries (DEFAULT_MAX_ENTRIES); oldest-untouched entry
- *   is evicted when the cap is exceeded.
+ * - Cache is capped at 64 entries (DEFAULT_MAX_ENTRIES); least-recently-used
+ *   entry is evicted when the cap is exceeded.
  * - Anchor is derived from the first non-meta user message using a heuristic
  *   filter for OpenCode's title-generation prompts. If OpenCode rewords those
  *   prompts, the filter may need updating.
+ * - Session resume is keyed per workspace + model + first-message hash. Changing
+ *   any of those starts a fresh chat.
  * - Session resume is only supported for the cursor-agent backend.
  */
 
 import { createHash } from "node:crypto";
-import { extractTextContent } from "./incremental-prompt.js";
+import { createLogger } from "../utils/logger";
+import { extractTextContent, type ProxyMessage } from "./incremental-prompt.js";
+
+const log = createLogger("session-resume");
 
 interface SessionResumeEntry {
   chatId: string;
@@ -27,6 +32,10 @@ interface SessionResumeEntry {
   workspace: string;
   /** First-message content prefix used as a collision safety check on lookup. */
   contentPrefix: string;
+  /** Fingerprint of the tool schema active when the session was created. */
+  toolFingerprint?: string;
+  /** Fingerprint of the subagent list active when the session was created. */
+  subagentFingerprint?: string;
   updatedAt: number;
 }
 
@@ -55,21 +64,23 @@ function isMetaUserMessage(content: string): boolean {
 }
 
 /**
- * Stable anchor for a conversation: first non-meta user message content.
- * Returns a hash plus the original content prefix for collision detection.
- * Survives `opencode run -c` because the opening user message is preserved.
- * Falls back to the literal anchor "default" when no usable user message exists.
+ * Stable anchor for a conversation: SHA-256 hash of the first non-meta user
+ * message content, plus an original-content prefix for collision detection.
+ * Assumes `opencode run -c` preserves the opening user message so the anchor
+ * remains stable across turns.
+ * Returns undefined when no usable user message exists, which tells callers
+ * to skip session resume entirely and avoid the collision-prone "default" key.
  */
 export function deriveConversationAnchor(
-  messages: Array<any>,
-): { anchor: string; contentPrefix: string } {
+  messages: Array<ProxyMessage>,
+): { anchor: string; contentPrefix: string } | undefined {
   for (const message of messages) {
     if (message?.role !== "user") continue;
     const content = extractTextContent(message.content).trim();
     if (!content || isMetaUserMessage(content)) continue;
     return { anchor: simpleHash(content), contentPrefix: content.slice(0, 80) };
   }
-  return { anchor: "default", contentPrefix: "" };
+  return undefined;
 }
 
 export function buildSessionKey(workspace: string, model: string, anchor: string): string {
@@ -84,15 +95,42 @@ export function isSessionResumeEnabled(): boolean {
 export function getResumeChatId(
   sessionKey: string,
   expectedPrefix?: string,
+  toolFingerprint?: string,
+  subagentFingerprint?: string,
 ): string | undefined {
   const entry = cache.get(sessionKey);
   if (!entry) return undefined;
   if (Date.now() - entry.updatedAt > DEFAULT_TTL_MS) {
+    log.info("Session resume entry expired", { sessionKey: sanitizeKey(sessionKey), ageMs: Date.now() - entry.updatedAt, ttlMs: DEFAULT_TTL_MS });
     cache.delete(sessionKey);
     return undefined;
   }
   if (expectedPrefix != null && entry.contentPrefix !== expectedPrefix) {
-    // Belt-and-suspenders: extremely unlikely after SHA-256, but log and treat as miss.
+    log.warn("Session resume contentPrefix mismatch; treating as cache miss", {
+      sessionKey: sanitizeKey(sessionKey),
+      storedPrefixLength: entry.contentPrefix.length,
+      expectedPrefixLength: expectedPrefix.length,
+    });
+    return undefined;
+  }
+  if (
+    toolFingerprint != null &&
+    entry.toolFingerprint != null &&
+    entry.toolFingerprint !== toolFingerprint
+  ) {
+    log.warn("Session resume tool fingerprint mismatch; falling back to full prompt", {
+      sessionKey: sanitizeKey(sessionKey),
+    });
+    return undefined;
+  }
+  if (
+    subagentFingerprint != null &&
+    entry.subagentFingerprint != null &&
+    entry.subagentFingerprint !== subagentFingerprint
+  ) {
+    log.warn("Session resume subagent fingerprint mismatch; falling back to full prompt", {
+      sessionKey: sanitizeKey(sessionKey),
+    });
     return undefined;
   }
   // Refresh LRU order on a successful read.
@@ -101,12 +139,20 @@ export function getResumeChatId(
   return entry.chatId;
 }
 
+/**
+ * Store or refresh a chat ID for the given session key.
+ *
+ * Refreshes LRU insertion order, ignores empty chat IDs, and evicts the
+ * least-recently-used entry when the cache exceeds DEFAULT_MAX_ENTRIES.
+ */
 export function recordResumeChatId(
   sessionKey: string,
   chatId: string,
   model: string,
   workspace: string,
   contentPrefix: string,
+  toolFingerprint?: string,
+  subagentFingerprint?: string,
 ): void {
   if (!chatId) return;
   // Delete first so a re-set moves the key to the end (LRU insertion order).
@@ -116,13 +162,21 @@ export function recordResumeChatId(
     model,
     workspace,
     contentPrefix,
+    toolFingerprint,
+    subagentFingerprint,
     updatedAt: Date.now(),
   });
   while (cache.size > DEFAULT_MAX_ENTRIES) {
     const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
+    log.info("Evicting oldest session resume entry", { sessionKey: sanitizeKey(oldest), reason: "maxEntries", maxEntries: DEFAULT_MAX_ENTRIES });
     cache.delete(oldest);
   }
+}
+
+/** Sanitize a session key for logging by hashing the full key. */
+function sanitizeKey(sessionKey: string): string {
+  return createHash("sha256").update(sessionKey).digest("hex").slice(0, 16);
 }
 
 export function clearResumeChatId(sessionKey: string): void {

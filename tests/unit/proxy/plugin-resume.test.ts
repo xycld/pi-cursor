@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
   _resetSessionResumeCache,
+  buildSessionKey,
+  deriveConversationAnchor,
   getResumeChatId,
 } from "../../../src/proxy/session-resume.js";
 import {
@@ -40,9 +42,24 @@ describe("plugin resume orchestration", () => {
     const result = resolvePromptForBackend(baseInput);
     expect(result.prompt).toBe("USER: Remember BETA");
     expect(result.resumeChatId).toBeUndefined();
-    expect(result.sessionKey).toMatch(/^\/workspace\0gpt-5\0/);
+    expect(result.sessionKey).toBe(
+      buildSessionKey("/workspace", "gpt-5", deriveConversationAnchor(baseInput.messages)!.anchor),
+    );
     expect(result.usedIncremental).toBe(false);
     expect(result.contentPrefix).toBe("Remember BETA");
+  });
+
+  it("resolvePromptForBackend: enabled + no usable anchor → full prompt, no sessionKey", () => {
+    process.env.CURSOR_ACP_SESSION_RESUME = "1";
+    const messages = [{ role: "system", content: "You are helpful" }];
+    const result = resolvePromptForBackend({
+      ...baseInput,
+      messages,
+    });
+    expect(result.prompt).toBe("SYSTEM: You are helpful");
+    expect(result.resumeChatId).toBeUndefined();
+    expect(result.sessionKey).toBeUndefined();
+    expect(result.usedIncremental).toBe(false);
   });
 
   it("resolvePromptForBackend: enabled + chatId + incremental → incremental + resume", () => {
@@ -163,5 +180,80 @@ describe("plugin resume orchestration", () => {
   it("buildCursorAgentCommand omits --resume when no chatId", () => {
     const cmd = buildCursorAgentCommand("gpt-5", "/workspace");
     expect(cmd).not.toContain("--resume");
+  });
+
+  it("captureResumeChatIdFromOutput ignores malformed and empty lines", () => {
+    process.env.CURSOR_ACP_SESSION_RESUME = "1";
+    const key = "/workspace\0gpt-5\0anchor";
+    const output = [
+      "",
+      "not-json",
+      "{}",
+      "{\"type\":\"assistant\"}",
+      "{\"type\":\"system\",\"session_id\":\"\"}",
+    ].join("\n");
+    expect(() => captureResumeChatIdFromOutput(output, key, "gpt-5", "/workspace", "prefix")).not.toThrow();
+    expect(getResumeChatId(key, "prefix")).toBeUndefined();
+  });
+
+  it("falls back to full prompt when tool fingerprint changes", () => {
+    process.env.CURSOR_ACP_SESSION_RESUME = "1";
+    const { sessionKey, contentPrefix, toolFingerprint } = resolvePromptForBackend({
+      ...baseInput,
+      tools: [{ function: { name: "read", description: "Read files", parameters: { properties: {} } } }],
+    });
+    captureResumeChatIdFromEvent(
+      { type: "system", session_id: "chat-abc" } as any,
+      sessionKey,
+      "gpt-5",
+      "/workspace",
+      contentPrefix,
+      toolFingerprint,
+    );
+
+    const followUp = resolvePromptForBackend({
+      ...baseInput,
+      messages: [
+        { role: "user", content: "Remember BETA" },
+        { role: "assistant", content: "Got it." },
+        { role: "user", content: "What was the codeword?" },
+      ],
+      tools: [
+        { function: { name: "read", description: "Read files", parameters: { properties: { path: {} } } } },
+        { function: { name: "write", description: "Write files", parameters: { properties: {} } } },
+      ],
+    });
+    expect(followUp.resumeChatId).toBeUndefined();
+    expect(followUp.usedIncremental).toBe(false);
+    expect(followUp.prompt).toContain("write");
+  });
+
+  it("falls back to full prompt when subagent list changes", () => {
+    process.env.CURSOR_ACP_SESSION_RESUME = "1";
+    const { sessionKey, contentPrefix, subagentFingerprint } = resolvePromptForBackend({
+      ...baseInput,
+      subagentNames: ["agent-a"],
+    });
+    captureResumeChatIdFromEvent(
+      { type: "system", session_id: "chat-abc" } as any,
+      sessionKey,
+      "gpt-5",
+      "/workspace",
+      contentPrefix,
+      undefined,
+      subagentFingerprint,
+    );
+
+    const followUp = resolvePromptForBackend({
+      ...baseInput,
+      messages: [
+        { role: "user", content: "Remember BETA" },
+        { role: "assistant", content: "Got it." },
+        { role: "user", content: "What was the codeword?" },
+      ],
+      subagentNames: ["agent-a", "agent-b"],
+    });
+    expect(followUp.resumeChatId).toBeUndefined();
+    expect(followUp.usedIncremental).toBe(false);
   });
 });
