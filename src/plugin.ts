@@ -39,6 +39,7 @@ import {
   isSessionResumeEnabled,
   recordResumeChatId,
   sanitizeSessionKey,
+  RESUME_CHAT_ID_SAFE_RE,
 } from "./proxy/session-resume.js";
 import {
   extractAllowedToolNames,
@@ -235,7 +236,7 @@ function resolveBackendForRequest(sdkApiKey: string | undefined): CursorRuntimeB
   });
 }
 
-const RESUME_CHAT_ID_SAFE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
 
 /**
  * Build the command array for invoking cursor-agent.

@@ -43,6 +43,10 @@ function emitErrorEvent(id, message) {
   emitEvent(id, { type: "error", message });
 }
 
+function emitStderr(id, text) {
+  writeProtocolLine(JSON.stringify({ id, stderr: text }) + "\n");
+}
+
 // In-flight request tracking for cancellation. Requests are processed
 // serially (one cursor-agent child at a time), so at most one child is
 // active at any moment. Set in handleRequest on spawn, cleared on child
@@ -98,7 +102,9 @@ async function handleRequest(request) {
 
     let stderrText = "";
     child.stderr?.on("data", (chunk) => {
-      stderrText += chunk.toString("utf8");
+      const text = chunk.toString("utf8");
+      stderrText += text;
+      emitStderr(id, text);
     });
 
     child.stdin.write(typeof prompt === "string" ? prompt : String(prompt));
@@ -131,9 +137,6 @@ async function handleRequest(request) {
           // ignore trailing garbage
         }
       }
-      if (code !== 0 && stderrText.trim()) {
-        console.error(`[cursor-agent-runner] Request ${id} stderr: ${stderrText.trim().slice(0, 500)}`);
-      }
       console.error(`[cursor-agent-runner] Request ${id} complete exitCode=${code ?? 1}`);
       emitDone(id, code ?? 1);
       resolve();
@@ -144,6 +147,9 @@ async function handleRequest(request) {
       currentChild = null;
       console.error(`[cursor-agent-runner] Request ${id} spawn error: ${err.message}`);
       emitErrorEvent(id, err.message);
+      if (stderrText.trim()) {
+        emitStderr(id, stderrText.trim());
+      }
       emitDone(id, 1);
       resolve();
     });

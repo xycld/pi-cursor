@@ -24,6 +24,9 @@ import { extractTextContent, type ProxyMessage } from "./incremental-prompt.js";
 
 const log = createLogger("session-resume");
 
+/** Safe resume chat ID pattern: alphanumeric, hyphen, underscore; no spaces or shell metacharacters. */
+export const RESUME_CHAT_ID_SAFE_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
 interface SessionResumeEntry {
   chatId: string;
   /** First-message content prefix used as a collision safety check on lookup. */
@@ -72,11 +75,37 @@ export function deriveConversationAnchor(
 ): { anchor: string; contentPrefix: string } | undefined {
   for (const message of messages) {
     if (message?.role !== "user") continue;
-    const content = extractTextContent(message.content).trim();
-    if (!content || isMetaUserMessage(content)) continue;
-    return { anchor: simpleHash(content), contentPrefix: content.slice(0, 500) };
+    const text = extractTextContent(message.content).trim();
+    if (!text || isMetaUserMessage(text)) continue;
+    const canonical = canonicalizeContentForAnchor(message.content);
+    return { anchor: simpleHash(canonical), contentPrefix: text.slice(0, 500) };
   }
   return undefined;
+}
+
+/** Canonical serialization of message content for anchor hashing.
+ *  Includes text and non-text parts so identical text with different images
+ *  do not collide. A pure-text array produces the same canonical form as a
+ *  plain string so the anchor is stable across OpenCode's content formats.
+ */
+function canonicalizeContentForAnchor(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const hasNonText = content.some((part: any) => part?.type !== "text" || typeof part.text !== "string");
+  if (!hasNonText) {
+    return content.map((part: any) => part.text).join("\n");
+  }
+  return content
+    .map((part: any) => {
+      if (part?.type === "text" && typeof part.text === "string") {
+        return `text:${part.text}`;
+      }
+      if (part?.type === "image_url") {
+        return `image_url:${typeof part.image_url?.url === "string" ? part.image_url.url : ""}`;
+      }
+      return `part:${part?.type ?? ""}`;
+    })
+    .join("\n");
 }
 
 /** Build a unique session key from workspace, model, and conversation anchor. */
@@ -178,10 +207,18 @@ export function recordResumeChatId(
   subagentFingerprint?: string,
 ): void {
   if (!chatId) return;
+  const trimmed = chatId.trim();
+  if (!RESUME_CHAT_ID_SAFE_RE.test(trimmed)) {
+    log.warn("Refusing to cache unsafe resume chat ID", {
+      sessionKeyHash: sanitizeSessionKey(sessionKey),
+      chatIdHash: hashForLog(trimmed),
+    });
+    return;
+  }
   // Delete first so a re-set moves the key to the end (LRU insertion order).
   cache.delete(sessionKey);
   cache.set(sessionKey, {
-    chatId,
+    chatId: trimmed,
     contentPrefix,
     toolFingerprint,
     subagentFingerprint,

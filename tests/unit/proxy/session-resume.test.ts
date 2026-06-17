@@ -75,7 +75,46 @@ describe("session-resume", () => {
         ],
       },
     ]);
-    expect(mixedResult!.anchor).toBe(stringResult!.anchor);
+    expect(mixedResult!.anchor).not.toBe(stringResult!.anchor);
+  });
+
+  it("produces different anchors for identical text with different images", () => {
+    const messagesA = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Describe this" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAA" } },
+        ],
+      },
+    ];
+    const messagesB = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Describe this" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,BBB" } },
+        ],
+      },
+    ];
+    const anchorA = deriveConversationAnchor(messagesA)!.anchor;
+    const anchorB = deriveConversationAnchor(messagesB)!.anchor;
+    expect(anchorA).not.toBe(anchorB);
+    expect(deriveConversationAnchor(messagesA)!.contentPrefix).toBe("Describe this".slice(0, 500));
+  });
+
+  it("produces different anchors for text-only vs text+image user messages", () => {
+    const textOnly = deriveConversationAnchor([{ role: "user", content: "hello" }])!.anchor;
+    const textAndImage = deriveConversationAnchor([
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "hello" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,abc" } },
+        ],
+      },
+    ])!.anchor;
+    expect(textAndImage).not.toBe(textOnly);
   });
 
   it("returns undefined when no usable user message", () => {
@@ -126,8 +165,15 @@ describe("session-resume", () => {
     expect(keyA).not.toBe(keyC);
   });
 
-  it("ignores recordResumeChatId with empty chatId", () => {
+  it("refuses to cache unsafe chat IDs", () => {
     const key = buildSessionKey("/workspace", "gpt-5", "abc123");
+    recordResumeChatId(key, "safe-id_123", "hello");
+    expect(getResumeChatId(key)).toBe("safe-id_123");
+
+    clearResumeChatId(key);
+    recordResumeChatId(key, "unsafe; id", "hello");
+    expect(getResumeChatId(key)).toBeUndefined();
+
     recordResumeChatId(key, "", "hello");
     expect(getResumeChatId(key)).toBeUndefined();
   });

@@ -182,4 +182,16 @@ describe("cursor-agent pool: cancellation + demux", () => {
     b.kill();
     expect(await waitForEvent(b, "close", 3000)).toBe(true);
   });
+
+  it("emits close and error when runner spawn fails", async () => {
+    process.env.CURSOR_ACP_CURSOR_AGENT_RUNNER_PATH = "/nonexistent/runner.mjs";
+    const child = createCursorAgentPoolNodeChild({ model: "m", prompt: "hi", cwd: tmpdir() });
+
+    const errorPromise = waitForEvent(child, "error", 3000);
+    const closePromise = waitForEvent(child, "close", 3000);
+    expect(await errorPromise).toBe(true);
+    expect(await closePromise).toBe(true);
+
+    delete process.env.CURSOR_ACP_CURSOR_AGENT_RUNNER_PATH;
+  });
 });

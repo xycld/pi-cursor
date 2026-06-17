@@ -155,7 +155,11 @@ function isTransientContinuation(tail: string): boolean {
   const causalMatch = stripped.match(/^(?:because of|due to)\s+(.+)/i);
   if (causalMatch) {
     const cause = causalMatch[1];
-    if (SESSION_SPECIFIC_CAUSE_WORDS.test(cause) && !TRANSIENT_CAUSE_WORDS.test(cause)) {
+    // Session-specific causes (inactivity, retention, purged, etc.) take
+    // precedence over transient words that may appear in the same clause
+    // (e.g. "inactivity timeout"). If the cause is clearly about the
+    // session being gone, treat it as a resume-specific failure.
+    if (SESSION_SPECIFIC_CAUSE_WORDS.test(cause)) {
       return false;
     }
     if (TRANSIENT_CAUSE_WORDS.test(cause)) {
@@ -164,8 +168,17 @@ function isTransientContinuation(tail: string): boolean {
   }
 
   const firstSegment = stripped.split(/[,;]/)[0]?.trim() ?? "";
-  if (firstSegment && TRANSIENT_CAUSE_WORDS.test(firstSegment)) {
-    return true;
+  if (firstSegment) {
+    if (SESSION_SPECIFIC_CAUSE_WORDS.test(firstSegment)) {
+      return false;
+    }
+    if (TRANSIENT_CAUSE_WORDS.test(firstSegment)) {
+      return true;
+    }
+  }
+
+  if (SESSION_SPECIFIC_CAUSE_WORDS.test(stripped)) {
+    return false;
   }
 
   if (TRANSIENT_CAUSE_WORDS.test(stripped)) {

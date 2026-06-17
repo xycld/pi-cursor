@@ -20,6 +20,7 @@ process.stdout.write(
     message: { role: "assistant", content: [{ type: "text", text: "partial..." }] },
   }) + "\n",
 );
+process.stderr.write("mock-cursor-agent: diagnostic stderr line\n");
 
 // Keep the process alive until killed. Safety net: exit if never cancelled.
 // 60s (unref'd) gives slow CI headroom so the net does not fire before the

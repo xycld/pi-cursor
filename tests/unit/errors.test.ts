@@ -243,6 +243,8 @@ describe("isResumeSpecificFailure", () => {
   it("still flags session-gone messages with natural continuations", () => {
     expect(isResumeSpecificFailure("session not found in our system")).toBe(true);
     expect(isResumeSpecificFailure("session has expired due to inactivity")).toBe(true);
+    expect(isResumeSpecificFailure("session has expired due to inactivity timeout")).toBe(true);
+    expect(isResumeSpecificFailure("session expired because of inactivity timeout")).toBe(true);
   });
 
   it("handles non-string input safely", () => {

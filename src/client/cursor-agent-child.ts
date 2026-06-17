@@ -69,7 +69,9 @@ function generateRequestId(): string {
 interface PendingRequest {
   controller: {
     enqueue: (data: Uint8Array) => void;
+    enqueueStderr: (data: Uint8Array) => void;
     close: () => void;
+    closeStderr: () => void;
     error: (err: Error) => void;
   };
   promiseResolver: (code: number) => void;
@@ -208,8 +210,12 @@ class CursorAgentPoolRunner {
 
         if (wrapped.done) {
           pending.controller.close();
+          pending.controller.closeStderr();
           pending.promiseResolver(wrapped.exitCode ?? 0);
           this.pendingRequests.delete(requestId);
+        } else if (wrapped.stderr != null) {
+          const text = typeof wrapped.stderr === "string" ? wrapped.stderr : String(wrapped.stderr);
+          pending.controller.enqueueStderr(new TextEncoder().encode(text));
         } else if (wrapped.event) {
           const eventJson = extractEventJson(line);
           pending.controller.enqueue(new TextEncoder().encode(eventJson + "\n"));
@@ -315,8 +321,14 @@ export class CursorAgentPoolNodeChild extends EventEmitter {
         enqueue: (data: Uint8Array) => {
           this.stdout.write(data);
         },
+        enqueueStderr: (data: Uint8Array) => {
+          this.stderr.write(data);
+        },
         close: () => {
           this.stdout.end();
+        },
+        closeStderr: () => {
+          this.stderr.end();
         },
         error: (err: Error) => {
           this.stdout.destroy(err);
@@ -346,6 +358,13 @@ export class CursorAgentPoolNodeChild extends EventEmitter {
       const error = err instanceof Error ? err : new Error(String(err));
       log.error("Failed to spawn cursor-agent pool child", { error: error.message });
       this.emit("error", error);
+      // Ensure the consumer sees a terminal close event and the streams end,
+      // otherwise an HTTP response can be left open on spawn failure. Do not
+      // destroy stdout with the error object: the PassThrough has no error
+      // listener and would turn it into an unhandled exception.
+      this.stderr.end();
+      this.stdout.end();
+      this.emit("close", 1);
     }
   }
 
