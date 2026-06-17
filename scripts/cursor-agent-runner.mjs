@@ -43,6 +43,13 @@ function emitErrorEvent(id, message) {
   emitEvent(id, { type: "error", message });
 }
 
+// In-flight request tracking for cancellation. Requests are processed
+// serially (one cursor-agent child at a time), so at most one child is
+// active at any moment. Set in handleRequest on spawn, cleared on child
+// close/error, and read by cancelRequest to kill the active child.
+let currentRequest = null;
+let currentChild = null;
+
 async function handleRequest(request) {
   const { id, model, cwd, prompt, resumeChatId, force, cursorAgent } = request;
 
@@ -82,6 +89,8 @@ async function handleRequest(request) {
       stdio: ["pipe", "pipe", "pipe"],
       shell,
     });
+    currentRequest = id;
+    currentChild = child;
 
     let stderrText = "";
     child.stderr?.on("data", (chunk) => {
@@ -109,6 +118,8 @@ async function handleRequest(request) {
     });
 
     child.on("close", (code) => {
+      currentRequest = null;
+      currentChild = null;
       if (buffer.trim()) {
         try {
           emitEvent(id, JSON.parse(buffer));
@@ -125,6 +136,8 @@ async function handleRequest(request) {
     });
 
     child.on("error", (err) => {
+      currentRequest = null;
+      currentChild = null;
       console.error(`[cursor-agent-runner] Request ${id} spawn error: ${err.message}`);
       emitErrorEvent(id, err.message);
       emitDone(id, 1);
@@ -165,6 +178,47 @@ async function main() {
     void pump();
   };
 
+  // Cancel an in-flight or queued request. The pool child's kill() sends a
+  // {cancel: id} control line; without this, an aborted/intercepted
+  // cursor-agent request would run to completion and block the serial queue
+  // behind it. Killing the active child lets its close handler emit done
+  // promptly; a still-queued request is dropped with a synthetic done so the
+  // waiting caller resolves instead of hanging.
+  const cancelRequest = (id) => {
+    if (id && id === currentRequest && currentChild) {
+      try {
+        currentChild.kill("SIGKILL");
+      } catch (err) {
+        console.error(`[cursor-agent-runner] cancel kill failed for ${id}: ${err.message}`);
+      }
+      return;
+    }
+    const idx = queue.findIndex((r) => r && r.id === id);
+    if (idx >= 0) {
+      queue.splice(idx, 1);
+      console.error(`[cursor-agent-runner] Cancelled queued request ${id}`);
+      emitDone(id, 1);
+    }
+    // else: unknown or already completed — nothing to cancel.
+  };
+
+  // Parse one stdin line and route it: a {cancel: "<id>"} control message
+  // cancels a request; anything else is enqueued as a request.
+  const dispatchLine = (text) => {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (err) {
+      console.error(`[cursor-agent-runner] Failed to parse NDJSON line: ${err.message}`);
+      return;
+    }
+    if (parsed && typeof parsed.cancel === "string") {
+      cancelRequest(parsed.cancel);
+      return;
+    }
+    enqueue(parsed);
+  };
+
   let buffer = "";
   await new Promise((resolveEnd, rejectEnd) => {
     process.stdin.setEncoding("utf8");
@@ -174,20 +228,12 @@ async function main() {
       buffer = parts.pop() ?? "";
       for (const part of parts) {
         if (!part.trim()) continue;
-        try {
-          enqueue(JSON.parse(part));
-        } catch (err) {
-          console.error(`[cursor-agent-runner] Failed to parse NDJSON line: ${err.message}`);
-        }
+        dispatchLine(part);
       }
     });
     process.stdin.on("end", () => {
       if (buffer.trim()) {
-        try {
-          enqueue(JSON.parse(buffer));
-        } catch (err) {
-          console.error(`[cursor-agent-runner] Failed to parse trailing NDJSON: ${err.message}`);
-        }
+        dispatchLine(buffer);
       }
       resolveEnd();
     });

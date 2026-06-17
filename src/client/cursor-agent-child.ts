@@ -171,6 +171,20 @@ class CursorAgentPoolRunner {
     this.runnerProcess.stdin.write(JSON.stringify(payload) + "\n");
   }
 
+  /**
+   * Cancel an in-flight or queued request by id. Writes a {cancel: id} control
+   * line to the runner's stdin; the runner kills the active cursor-agent child
+   * (or drops the request if still queued) and emits done so the pending
+   * request resolves. No-op if the runner stdin is not yet ready.
+   */
+  cancel(requestId: string): void {
+    if (!this.runnerProcess?.stdin) {
+      log.warn("cancel() called but runner stdin not ready", { requestId });
+      return;
+    }
+    this.runnerProcess.stdin.write(JSON.stringify({ cancel: requestId }) + "\n");
+  }
+
   private handleStdoutChunk(chunk: Buffer | Uint8Array): void {
     this.lineBuffer += chunk.toString("utf8");
     const lines = this.lineBuffer.split("\n");
@@ -274,6 +288,7 @@ export class CursorAgentPoolNodeChild extends EventEmitter {
   public readonly stdout: PassThrough = new PassThrough();
   public readonly stderr: PassThrough = new PassThrough();
   private requestId: string | null = null;
+  private runner: CursorAgentPoolRunner | null = null;
 
   spawn(options: AgentPoolRequest & { poolKey: string }): void {
     void this.spawnInternal(options);
@@ -282,6 +297,7 @@ export class CursorAgentPoolNodeChild extends EventEmitter {
   private async spawnInternal(options: AgentPoolRequest & { poolKey: string }): Promise<void> {
     try {
       const runner = poolManager.getRunner(options.poolKey);
+      this.runner = runner;
       await runner.ensureRunning();
 
       const controller = {
@@ -323,8 +339,11 @@ export class CursorAgentPoolNodeChild extends EventEmitter {
   }
 
   kill(): void {
-    if (this.requestId) {
-      log.debug(`kill() called on pool node child ${this.requestId}`);
+    if (this.runner && this.requestId) {
+      log.debug(`kill() cancelling pool request ${this.requestId}`);
+      this.runner.cancel(this.requestId);
+    } else if (this.requestId) {
+      log.debug(`kill() called before runner ready for ${this.requestId}`);
     }
   }
 }
