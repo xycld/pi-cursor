@@ -293,9 +293,12 @@ export function resolvePromptForBackend(input: {
   model: string;
   workspaceDirectory: string;
 }): ResolvedPrompt {
-  const fullPrompt = buildPromptFromMessages(input.messages, input.tools, input.subagentNames);
+  let fullPrompt: string | undefined;
+  const getFullPrompt = () =>
+    fullPrompt ??= buildPromptFromMessages(input.messages, input.tools, input.subagentNames);
+
   if (input.backend !== "cursor-agent" || !isSessionResumeEnabled()) {
-    return { prompt: fullPrompt, usedIncremental: false };
+    return { prompt: getFullPrompt(), usedIncremental: false };
   }
 
   const anchorResult = deriveConversationAnchor(input.messages);
@@ -304,7 +307,7 @@ export function resolvePromptForBackend(input: {
       model: input.model,
       workspaceDirectory: input.workspaceDirectory,
     });
-    return { prompt: fullPrompt, usedIncremental: false };
+    return { prompt: getFullPrompt(), usedIncremental: false };
   }
   const { anchor, contentPrefix } = anchorResult;
   const sessionKey = buildSessionKey(input.workspaceDirectory, input.model, anchor);
@@ -318,7 +321,7 @@ export function resolvePromptForBackend(input: {
         sessionKey,
       });
     }
-    return { prompt: fullPrompt, sessionKey, usedIncremental: false, contentPrefix, toolFingerprint, subagentFingerprint };
+    return { prompt: getFullPrompt(), sessionKey, usedIncremental: false, contentPrefix, toolFingerprint, subagentFingerprint };
   }
 
   const incremental = buildIncrementalPrompt(input.messages);
@@ -327,7 +330,7 @@ export function resolvePromptForBackend(input: {
       sessionKey,
       resumeChatId,
       promptChars: incremental.length,
-      fullPromptChars: fullPrompt.length,
+      fullPromptChars: getFullPrompt().length,
     });
     return { prompt: incremental, resumeChatId, sessionKey, usedIncremental: true, contentPrefix, toolFingerprint, subagentFingerprint };
   }
@@ -336,7 +339,7 @@ export function resolvePromptForBackend(input: {
     sessionKey,
     resumeChatId,
   });
-  return { prompt: fullPrompt, resumeChatId, sessionKey, usedIncremental: false, contentPrefix, toolFingerprint, subagentFingerprint };
+  return { prompt: getFullPrompt(), resumeChatId, sessionKey, usedIncremental: false, contentPrefix, toolFingerprint, subagentFingerprint };
 }
 
 /**
