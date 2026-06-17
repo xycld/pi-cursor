@@ -83,15 +83,23 @@ export function deriveConversationAnchor(
   return undefined;
 }
 
+/** Build a unique session key from workspace, model, and conversation anchor. */
 export function buildSessionKey(workspace: string, model: string, anchor: string): string {
   return `${workspace}\0${model}\0${anchor}`;
 }
 
+/** Return whether `CURSOR_ACP_SESSION_RESUME` is enabled (1/true/on/yes). */
 export function isSessionResumeEnabled(): boolean {
   const value = process.env.CURSOR_ACP_SESSION_RESUME?.toLowerCase();
   return value === "1" || value === "true" || value === "on" || value === "yes";
 }
 
+/**
+ * Look up a cached cursor-agent chat ID for the given session key.
+ *
+ * Validates TTL, content prefix, and optional tool/subagent fingerprints.
+ * Returns undefined and evicts stale entries on mismatch.
+ */
 export function getResumeChatId(
   sessionKey: string,
   expectedPrefix?: string,
@@ -179,6 +187,7 @@ function sanitizeKey(sessionKey: string): string {
   return createHash("sha256").update(sessionKey).digest("hex").slice(0, 16);
 }
 
+/** Remove a cached chat ID, e.g. after a resume-specific cursor-agent failure. */
 export function clearResumeChatId(sessionKey: string): void {
   cache.delete(sessionKey);
 }

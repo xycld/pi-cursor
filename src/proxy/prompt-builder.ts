@@ -12,6 +12,7 @@ export function _resetToolSchemaCache(): void {
   _cachedToolBlock = "";
 }
 
+/** Build a compact fingerprint of the tool schema for cache validation. */
 export function buildToolFingerprint(tools: Array<any>): string {
   if (tools.length === 0) return "";
   // Include names + descriptions + parameter names + required fields to detect
