@@ -26,7 +26,7 @@ export function extractTextContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
-      .map((part: any) => (part?.type === "text" && typeof part.text === "string" ? part.text : ""))
+      .map((part) => (part?.type === "text" && typeof part.text === "string" ? part.text : ""))
       .filter(Boolean)
       .join("\n");
   }
@@ -64,7 +64,7 @@ export function buildIncrementalPrompt(messages: Array<ProxyMessage>): string | 
     if (!text.trim()) return null;
     // Mixed multimodal follow-ups must fall back to the full prompt so image/audio
     // parts are not silently dropped.
-    if (Array.isArray(last.content) && last.content.some((part: any) => part?.type && part.type !== "text")) {
+    if (Array.isArray(last.content) && last.content.some((part) => part?.type && part.type !== "text")) {
       return null;
     }
     return text.trim();
