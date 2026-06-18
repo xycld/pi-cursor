@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -264,6 +264,19 @@ async function requestCompletion(baseURL: string, body: any): Promise<Response> 
   return response;
 }
 
+async function waitForFileText(path: string, requiredText?: string): Promise<string> {
+  for (let i = 0; i < 20; i++) {
+    if (existsSync(path)) {
+      const text = readFileSync(path, "utf8");
+      if (text.length > 0 && (requiredText === undefined || text.includes(requiredText))) {
+        return text;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
 describe("OpenCode-owned tool loop integration", () => {
   let originalPath = "";
   let originalToolLoopMode: string | undefined;
@@ -271,9 +284,13 @@ describe("OpenCode-owned tool loop integration", () => {
   let originalReuseExistingProxy: string | undefined;
   let originalProviderBoundary: string | undefined;
   let originalToolLoopMaxRepeat: string | undefined;
+  let originalTiming: string | undefined;
+  let originalLogDir: string | undefined;
+  let originalLogConsole: string | undefined;
   let mockDir = "";
   let promptFile = "";
   let argsFile = "";
+  let logDir = "";
   let baseURL = "";
 
   beforeAll(async () => {
@@ -283,9 +300,13 @@ describe("OpenCode-owned tool loop integration", () => {
     originalReuseExistingProxy = process.env.CURSOR_ACP_REUSE_EXISTING_PROXY;
     originalProviderBoundary = process.env.CURSOR_ACP_PROVIDER_BOUNDARY;
     originalToolLoopMaxRepeat = process.env.CURSOR_ACP_TOOL_LOOP_MAX_REPEAT;
+    originalTiming = process.env.CURSOR_ACP_TIMING;
+    originalLogDir = process.env.CURSOR_ACP_LOG_DIR;
+    originalLogConsole = process.env.CURSOR_ACP_LOG_CONSOLE;
     mockDir = mkdtempSync(join(tmpdir(), "cursor-agent-mock-"));
     promptFile = join(mockDir, "prompt.txt");
     argsFile = join(mockDir, "args.json");
+    logDir = join(mockDir, "logs");
 
     const mockCursorPath = join(mockDir, "cursor-agent");
     writeFileSync(mockCursorPath, MOCK_CURSOR_AGENT, "utf8");
@@ -297,9 +318,15 @@ describe("OpenCode-owned tool loop integration", () => {
     process.env.CURSOR_ACP_REUSE_EXISTING_PROXY = "false";
     process.env.CURSOR_ACP_PROVIDER_BOUNDARY = "v1";
     process.env.CURSOR_ACP_TOOL_LOOP_MAX_REPEAT = "1";
+    process.env.CURSOR_ACP_TIMING = "1";
+    process.env.CURSOR_ACP_LOG_DIR = logDir;
+    process.env.CURSOR_ACP_LOG_CONSOLE = "0";
     process.env.MOCK_CURSOR_PROMPT_FILE = "";
     process.env.MOCK_CURSOR_ARGS_FILE = "";
     process.env.MOCK_CURSOR_SCENARIO = "assistant-text";
+
+    const { _resetLoggerState } = await import("../../src/utils/logger");
+    _resetLoggerState();
 
     const { CursorPlugin } = await import("../../src/plugin");
     const hooks = await CursorPlugin({
@@ -325,7 +352,7 @@ describe("OpenCode-owned tool loop integration", () => {
     baseURL = output.options.baseURL;
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     process.env.PATH = originalPath;
     if (originalToolLoopMode === undefined) {
       delete process.env.CURSOR_ACP_TOOL_LOOP_MODE;
@@ -352,6 +379,23 @@ describe("OpenCode-owned tool loop integration", () => {
     } else {
       process.env.CURSOR_ACP_TOOL_LOOP_MAX_REPEAT = originalToolLoopMaxRepeat;
     }
+    if (originalTiming === undefined) {
+      delete process.env.CURSOR_ACP_TIMING;
+    } else {
+      process.env.CURSOR_ACP_TIMING = originalTiming;
+    }
+    if (originalLogDir === undefined) {
+      delete process.env.CURSOR_ACP_LOG_DIR;
+    } else {
+      process.env.CURSOR_ACP_LOG_DIR = originalLogDir;
+    }
+    if (originalLogConsole === undefined) {
+      delete process.env.CURSOR_ACP_LOG_CONSOLE;
+    } else {
+      process.env.CURSOR_ACP_LOG_CONSOLE = originalLogConsole;
+    }
+    const { _resetLoggerState } = await import("../../src/utils/logger");
+    _resetLoggerState();
     delete process.env.MOCK_CURSOR_PROMPT_FILE;
     delete process.env.MOCK_CURSOR_ARGS_FILE;
     delete process.env.MOCK_CURSOR_SCENARIO;
@@ -385,6 +429,27 @@ describe("OpenCode-owned tool loop integration", () => {
       .filter((value): value is string => typeof value === "string");
     expect(allContent).not.toContain("should not appear");
     expect(dataLines[dataLines.length - 1]).toBe("[DONE]");
+  });
+
+  it("writes request timing phases for streaming requests", async () => {
+    process.env.MOCK_CURSOR_SCENARIO = "assistant-text";
+
+    const response = await requestCompletion(baseURL, {
+      model: "auto",
+      stream: true,
+      messages: [{ role: "user", content: "Say hello" }],
+    });
+
+    await response.text();
+
+    const logText = await waitForFileText(join(logDir, "plugin.log"), "Request timing");
+    expect(logText).toContain("Request timing");
+    expect(logText).toContain("body-parsed");
+    expect(logText).toContain("prompt-built");
+    expect(logText).toContain("backend-resolved");
+    expect(logText).toContain("first-stdout-byte");
+    expect(logText).toContain("first-sse-write");
+    expect(logText).toContain("request:done");
   });
 
   it("returns non-streaming tool_calls response", async () => {

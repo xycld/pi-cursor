@@ -47,6 +47,22 @@ describe("RequestPerf", () => {
     expect(() => perf.summarize()).not.toThrow();
   });
 
+  it("summarize preserves repeated marker phases", () => {
+    const perf = new RequestPerf("test-repeated");
+    perf.mark("tool-call");
+    perf.mark("tool-call");
+    perf.mark("request:done");
+
+    const summary = perf.summarize();
+
+    expect(summary?.timeline.map((phase) => phase.name)).toEqual([
+      "tool-call",
+      "tool-call",
+      "request:done",
+    ]);
+    expect(summary?.phaseTotals["tool-call"]).toBeGreaterThanOrEqual(0);
+  });
+
   it("markers have monotonically increasing timestamps", () => {
     const perf = new RequestPerf("test-6");
     perf.mark("a");

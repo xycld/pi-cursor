@@ -7,6 +7,24 @@ export interface PerfMarker {
   ts: number;
 }
 
+export interface PerfPhase {
+  name: string;
+  deltaMs: number;
+  atMs: number;
+}
+
+export interface PerfSummary {
+  requestId: string;
+  total: number;
+  phaseTotals: Record<string, number>;
+  timeline: PerfPhase[];
+}
+
+function isTimingLogEnabled(): boolean {
+  const value = process.env.CURSOR_ACP_TIMING?.toLowerCase();
+  return value === "1" || value === "true" || value === "on" || value === "yes";
+}
+
 export class RequestPerf {
   private markers: PerfMarker[] = [];
   private readonly requestId: string;
@@ -20,16 +38,30 @@ export class RequestPerf {
     this.markers.push({ name, ts: Date.now() });
   }
 
-  /** Log timing summary at debug level. Call once at request end. */
-  summarize(): void {
-    if (this.markers.length < 2) return;
+  /** Log timing summary. Call once at request end. */
+  summarize(): PerfSummary | undefined {
+    if (this.markers.length < 2) return undefined;
     const start = this.markers[0].ts;
-    const phases: Record<string, number> = {};
+    const phaseTotals: Record<string, number> = {};
+    const timeline: PerfPhase[] = [];
     for (let i = 1; i < this.markers.length; i++) {
-      phases[this.markers[i].name] = this.markers[i].ts - this.markers[i - 1].ts;
+      const marker = this.markers[i];
+      const deltaMs = marker.ts - this.markers[i - 1].ts;
+      phaseTotals[marker.name] = (phaseTotals[marker.name] ?? 0) + deltaMs;
+      timeline.push({
+        name: marker.name,
+        deltaMs,
+        atMs: marker.ts - start,
+      });
     }
     const total = this.markers[this.markers.length - 1].ts - start;
-    log.debug("Request timing", { requestId: this.requestId, total, phases });
+    const summary: PerfSummary = { requestId: this.requestId, total, phaseTotals, timeline };
+    if (isTimingLogEnabled()) {
+      log.info("Request timing", summary);
+    } else {
+      log.debug("Request timing", summary);
+    }
+    return summary;
   }
 
   /** Get elapsed ms since construction. */

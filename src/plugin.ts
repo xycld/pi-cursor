@@ -1150,7 +1150,10 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
       }
 
       log.debug("Proxy request (bun)", { method: req.method, path: url.pathname });
+      const reqPerf = new RequestPerf(`bun-${Date.now()}`);
       const body: any = await req.json().catch(() => ({}));
+      reqPerf.mark("body-read");
+      reqPerf.mark("body-parsed");
       const messages: Array<any> = Array.isArray(body?.messages) ? body.messages : [];
       const stream = body?.stream === true;
       const tools = Array.isArray(body?.tools) ? body.tools : [];
@@ -1179,6 +1182,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
       const authHeader = req.headers.get("authorization");
       const sdkApiKey = resolveRequestSdkApiKey(authHeader);
       const backend = resolveBackendForRequest(sdkApiKey);
+      reqPerf.mark("backend-resolved");
       const {
         prompt,
         resumeChatId,
@@ -1196,6 +1200,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         model,
         workspaceDirectory,
       });
+      reqPerf.mark("prompt-built");
       const sessionResumeKeyHash = sessionResumeKey ? sanitizeSessionKey(sessionResumeKey) : undefined;
       const resumeChatIdHash = resumeChatId ? sanitizeSessionKey(resumeChatId) : undefined;
       const msgSummaryBun = messages.map((m: any, i: number) => {
@@ -1221,6 +1226,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         );
       }
 
+      reqPerf.mark("child-create-start");
       const child = createBunChildForBackend({
         backend,
         sdkApiKey,
@@ -1229,6 +1235,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         workspaceDirectory,
         resumeChatId,
       });
+      reqPerf.mark("child-created");
 
       if (!stream) {
         const [stdoutText, stderrText] = await Promise.all([
@@ -1341,18 +1348,27 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
       const encoder = new TextEncoder();
       const id = `cursor-acp-${Date.now()}`;
       const created = Math.floor(Date.now() / 1000);
-      const perf = new RequestPerf(id);
+      const perf = reqPerf;
       const toolMapper = new ToolMapper();
       const toolSessionId = id;
       const passThroughTracker = new PassThroughTracker();
 
-      perf.mark("spawn");
+      perf.mark("child-dispatched");
       const sse = new ReadableStream({
         async start(controller) {
           let streamTerminated = false;
           let firstTokenReceived = false;
+          let firstStdoutByteReceived = false;
+          let firstSseWritten = false;
           let sawSuccessfulStreamOutput = false;
           let usage: OpenAiUsage | undefined;
+          const enqueueSse = (payload: string) => {
+            if (!firstSseWritten) {
+              perf.mark("first-sse-write");
+              firstSseWritten = true;
+            }
+            controller.enqueue(encoder.encode(payload));
+          };
           try {
             const reader = (child.stdout as ReadableStream<Uint8Array>).getReader();
             const converter = new StreamToSseConverter(model, { id, created });
@@ -1368,9 +1384,9 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                   boundary.createStreamToolCallChunks({ id, created, model }, toolCall),
               );
               for (const chunk of streamChunks) {
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+                enqueueSse(`data: ${JSON.stringify(chunk)}\n\n`);
               }
-              controller.enqueue(encoder.encode(formatSseDone()));
+              enqueueSse(formatSseDone());
               streamTerminated = true;
               try {
                 child.kill();
@@ -1383,8 +1399,8 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 return;
               }
               const errChunk = createChatCompletionChunk(id, created, model, message, true);
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(errChunk)}\n\n`));
-              controller.enqueue(encoder.encode(formatSseDone()));
+              enqueueSse(`data: ${JSON.stringify(errChunk)}\n\n`);
+              enqueueSse(formatSseDone());
               streamTerminated = true;
               try {
                 child.kill();
@@ -1398,6 +1414,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
               const { value, done } = await reader.read();
               if (done) break;
               if (!value || value.length === 0) continue;
+              if (!firstStdoutByteReceived) { perf.mark("first-stdout-byte"); firstStdoutByteReceived = true; }
               if (!firstTokenReceived) { perf.mark("first-token"); firstTokenReceived = true; }
 
               for (const line of lineBuffer.push(value)) {
@@ -1443,10 +1460,10 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                     responseMeta: { id, created, model },
                     passThroughTracker,
                     onToolUpdate: (update) => {
-                      controller.enqueue(encoder.encode(formatToolUpdateEvent(update)));
+                      enqueueSse(formatToolUpdateEvent(update));
                     },
                     onToolResult: (toolResult) => {
-                      controller.enqueue(encoder.encode(`data: ${JSON.stringify(toolResult)}\n\n`));
+                      enqueueSse(`data: ${JSON.stringify(toolResult)}\n\n`);
                     },
                     onInterceptedToolCall: (toolCall) => {
                       emitToolCallAndTerminate(toolCall);
@@ -1460,7 +1477,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                       emitTerminalAssistantErrorAndTerminate(result.terminate.message);
                     } else {
                       // Silent termination: just end the stream without an error message
-                      controller.enqueue(encoder.encode(formatSseDone()));
+                      enqueueSse(formatSseDone());
                       streamTerminated = true;
                       try { child.kill(); } catch { /* ignore */ }
                     }
@@ -1479,7 +1496,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                   sawSuccessfulStreamOutput = true;
                 }
                 for (const sse of sseChunks) {
-                  controller.enqueue(encoder.encode(sse));
+                  enqueueSse(sse);
                 }
               }
             }
@@ -1527,10 +1544,10 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                   responseMeta: { id, created, model },
                   passThroughTracker,
                   onToolUpdate: (update) => {
-                    controller.enqueue(encoder.encode(formatToolUpdateEvent(update)));
+                    enqueueSse(formatToolUpdateEvent(update));
                   },
                   onToolResult: (toolResult) => {
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(toolResult)}\n\n`));
+                    enqueueSse(`data: ${JSON.stringify(toolResult)}\n\n`);
                   },
                   onInterceptedToolCall: (toolCall) => {
                     emitToolCallAndTerminate(toolCall);
@@ -1543,7 +1560,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                   if (!result.terminate.silent) {
                     emitTerminalAssistantErrorAndTerminate(result.terminate.message);
                   } else {
-                    controller.enqueue(encoder.encode(formatSseDone()));
+                    enqueueSse(formatSseDone());
                     streamTerminated = true;
                     try { child.kill(); } catch { /* ignore */ }
                   }
@@ -1561,7 +1578,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 sawSuccessfulStreamOutput = true;
               }
               for (const sse of sseChunks) {
-                controller.enqueue(encoder.encode(sse));
+                enqueueSse(sse);
               }
             }
             if (streamTerminated) {
@@ -1594,8 +1611,8 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                   failureTextHash: hashForLog(parsed.message),
                 });
                 const errChunk = createChatCompletionChunk(id, created, model, msg, true);
-                controller.enqueue(encoder.encode(`data: ${JSON.stringify(errChunk)}\n\n`));
-                controller.enqueue(encoder.encode(formatSseDone()));
+                enqueueSse(`data: ${JSON.stringify(errChunk)}\n\n`);
+                enqueueSse(formatSseDone());
                 return;
               }
             }
@@ -1622,12 +1639,12 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
             }
 
             const doneChunk = createChatCompletionChunk(id, created, model, "", true);
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify(doneChunk)}\n\n`));
+            enqueueSse(`data: ${JSON.stringify(doneChunk)}\n\n`);
             if (usage) {
               const usageChunk = createChatCompletionUsageChunk(id, created, model, usage);
-              controller.enqueue(encoder.encode(`data: ${JSON.stringify(usageChunk)}\n\n`));
+              enqueueSse(`data: ${JSON.stringify(usageChunk)}\n\n`);
             }
-            controller.enqueue(encoder.encode(formatSseDone()));
+            enqueueSse(formatSseDone());
           } finally {
             perf.mark("request:done");
             perf.summarize();
@@ -1712,13 +1729,16 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
       }
 
       log.debug("Proxy request (node)", { method: req.method, path: url.pathname });
+      const reqPerf = new RequestPerf(`node-${Date.now()}`);
       const bodyChunks: Buffer[] = [];
       for await (const chunk of req) {
         bodyChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       }
+      reqPerf.mark("body-read");
       const body = Buffer.concat(bodyChunks).toString("utf8");
 
       const bodyData: any = JSON.parse(body || "{}");
+      reqPerf.mark("body-parsed");
       const messages: Array<any> = Array.isArray(bodyData?.messages) ? bodyData.messages : [];
       const stream = bodyData?.stream === true;
       const tools = Array.isArray(bodyData?.tools) ? bodyData.tools : [];
@@ -1727,7 +1747,6 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
       const toolLoopGuard = createToolLoopGuard(messages, TOOL_LOOP_MAX_REPEAT);
       const boundaryContext = createBoundaryRuntimeContext("node-handler");
 
-      const reqPerf = new RequestPerf(`node-${Date.now()}`);
       const subagentNames = readSubagentNames();
       const model = boundaryContext.run("resolveRuntimeModel", (boundary) =>
         boundary.resolveRuntimeModel(bodyData?.model, bodyData?.cursorModel),
@@ -1735,6 +1754,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
       const authHeaderNode = req.headers["authorization"] as string | undefined;
       const sdkApiKeyNode = resolveRequestSdkApiKey(authHeaderNode);
       const backend = resolveBackendForRequest(sdkApiKeyNode);
+      reqPerf.mark("backend-resolved");
       const {
         prompt,
         resumeChatId,
@@ -1773,13 +1793,13 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         sessionResume: resumeChatId ? { chatIdHash: resumeChatIdHashNode, incremental: usedIncremental } : undefined,
       });
 
-      reqPerf.mark("backend-resolved");
       if (backend === "sdk" && !sdkApiKeyNode) {
         res.writeHead(401, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "Cursor SDK backend requires a real Cursor API key. Set CURSOR_API_KEY or run `opencode auth login`; the legacy `cursor-agent` placeholder is not valid SDK auth." }));
         return;
       }
 
+      reqPerf.mark("child-create-start");
       const child = createNodeChildForBackend({
         backend,
         sdkApiKey: sdkApiKeyNode,
@@ -1788,6 +1808,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         workspaceDirectory,
         resumeChatId,
       });
+      reqPerf.mark("child-created");
 
       if (!stream) {
         const stdoutChunks: Buffer[] = [];
@@ -1915,7 +1936,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         const id = `cursor-acp-${Date.now()}`;
         const created = Math.floor(Date.now() / 1000);
         const perf = reqPerf;
-        perf.mark("child-spawned");
+        perf.mark("child-dispatched");
 
         const converter = new StreamToSseConverter(model, { id, created });
         const lineBuffer = new LineBuffer();
@@ -1925,8 +1946,17 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
         const stderrChunks: Buffer[] = [];
         let streamTerminated = false;
         let firstTokenReceived = false;
+        let firstStdoutByteReceived = false;
+        let firstSseWritten = false;
         let sawSuccessfulStreamOutput = false;
         let usage: OpenAiUsage | undefined;
+        const writeSse = (payload: string) => {
+          if (!firstSseWritten) {
+            perf.mark("first-sse-write");
+            firstSseWritten = true;
+          }
+          res.write(payload);
+        };
         child.stderr.on("data", (chunk) => {
           stderrChunks.push(Buffer.from(chunk));
         });
@@ -1939,8 +1969,8 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
           const parsed = parseAgentError(errSource);
           const msg = formatErrorForUser(parsed);
           const errChunk = createChatCompletionChunk(id, created, model, msg, true);
-          res.write(`data: ${JSON.stringify(errChunk)}\n\n`);
-          res.write(formatSseDone());
+          writeSse(`data: ${JSON.stringify(errChunk)}\n\n`);
+          writeSse(formatSseDone());
           streamTerminated = true;
           res.end();
         });
@@ -1958,9 +1988,9 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
               boundary.createStreamToolCallChunks({ id, created, model }, toolCall),
           );
           for (const chunk of streamChunks) {
-            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+            writeSse(`data: ${JSON.stringify(chunk)}\n\n`);
           }
-          res.write(formatSseDone());
+          writeSse(formatSseDone());
           streamTerminated = true;
           res.end();
           try {
@@ -1974,8 +2004,8 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
             return;
           }
           const errChunk = createChatCompletionChunk(id, created, model, message, true);
-          res.write(`data: ${JSON.stringify(errChunk)}\n\n`);
-          res.write(formatSseDone());
+          writeSse(`data: ${JSON.stringify(errChunk)}\n\n`);
+          writeSse(formatSseDone());
           streamTerminated = true;
           res.end();
           try {
@@ -2033,10 +2063,10 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 responseMeta: { id, created, model },
                 passThroughTracker,
                 onToolUpdate: (update) => {
-                  res.write(formatToolUpdateEvent(update));
+                  writeSse(formatToolUpdateEvent(update));
                 },
                 onToolResult: (toolResult) => {
-                  res.write(`data: ${JSON.stringify(toolResult)}\n\n`);
+                  writeSse(`data: ${JSON.stringify(toolResult)}\n\n`);
                 },
                 onInterceptedToolCall: (toolCall) => {
                   emitToolCallAndTerminate(toolCall);
@@ -2064,7 +2094,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
               sawSuccessfulStreamOutput = true;
             }
             for (const sse of sseChunks) {
-              res.write(sse);
+              writeSse(sse);
             }
           }
         };
@@ -2076,6 +2106,7 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
             while (chunkQueue.length > 0) {
               if (streamTerminated || res.writableEnded) break;
               const chunk = chunkQueue.shift()!;
+              if (!firstStdoutByteReceived) { perf.mark("first-stdout-byte"); firstStdoutByteReceived = true; }
               if (!firstTokenReceived) { perf.mark("first-token"); firstTokenReceived = true; }
               await processLines(lineBuffer.push(chunk));
             }
@@ -2112,8 +2143,8 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                   const parsed = parseAgentError(errSource);
                   const msg = formatErrorForUser(parsed);
                   const errChunk = createChatCompletionChunk(id, created, model, msg, true);
-                  res.write(`data: ${JSON.stringify(errChunk)}\n\n`);
-                  res.write(formatSseDone());
+                  writeSse(`data: ${JSON.stringify(errChunk)}\n\n`);
+                  writeSse(formatSseDone());
                   streamTerminated = true;
                   res.end();
                   return;
@@ -2144,12 +2175,12 @@ async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: 
                 model,
                 choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
               };
-              res.write(`data: ${JSON.stringify(doneChunk)}\n\n`);
+              writeSse(`data: ${JSON.stringify(doneChunk)}\n\n`);
               if (usage) {
                 const usageChunk = createChatCompletionUsageChunk(id, created, model, usage);
-                res.write(`data: ${JSON.stringify(usageChunk)}\n\n`);
+                writeSse(`data: ${JSON.stringify(usageChunk)}\n\n`);
               }
-              res.write(formatSseDone());
+              writeSse(formatSseDone());
               streamTerminated = true;
               res.end();
             }
