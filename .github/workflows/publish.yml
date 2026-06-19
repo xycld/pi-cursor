@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -44,11 +44,8 @@ jobs:
             exit 1
           fi
 
-      - run: bun install
-      - run: bun run build
-      - run: bun run test:ci:unit
-      # Integration tests skipped in publish - already validated on push to main
-      - run: npm pack --dry-run
+      - run: npm install
+      - run: npm run verify
 
       - name: Verify trusted publishing environment
         if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)

@@ -6,7 +6,19 @@
   <img src="https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white" alt="Windows" />
 </p>
 
-No prompt limits. No broken streams. Full thinking + tool support in OpenCode. Your Cursor subscription, properly integrated.
+No prompt limits. No broken streams. Cursor subscription models in Pi, properly integrated.
+
+## Migration Note
+
+This repository has been migrated from the previous OpenCode package surface to `pi-cursor`:
+
+- npm package: `@xycloud/pi-cursor`; CLI: `pi-cursor`
+- global config: `${PI_CODING_AGENT_DIR:-~/.pi/agent}`
+- provider: `cursor-acp`
+- extension entry: `pi-extension/cursor-acp/index.ts`
+- auth remains owned by `cursor-agent login`
+
+The upstream source tree is kept in the repository where possible so future upstream updates remain easy to merge. The published package surface is constrained to the Pi installer, Pi extension, and Cursor model metadata.
 
 ## Installation
 
@@ -14,120 +26,68 @@ No prompt limits. No broken streams. Full thinking + tool support in OpenCode. Y
 
 **Linux & macOS:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/Nomadcxx/opencode-cursor/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/xycld/pi-cursor/main/install.sh | bash
 ```
 
 **Windows:**
 ```powershell
-npm install -g @rama_nigg/open-cursor
-open-cursor install
+npm install -g @xycloud/pi-cursor
+pi-cursor install
 ```
 
 Then authenticate and verify:
 ```bash
 cursor-agent login
-opencode models | grep cursor-acp
+pi --offline --list-models cursor-acp
 ```
 
 ### Option B — npm global + CLI
 
 ```bash
-npm install -g @rama_nigg/open-cursor
-open-cursor install
+npm install -g @xycloud/pi-cursor
+pi-cursor install
 ```
 
-Upgrade: `npm update -g @rama_nigg/open-cursor`
+Upgrade: `npm update -g @xycloud/pi-cursor && pi-cursor install`
 
 <details>
-<summary><b>Option C</b> — Add to opencode.json</summary>
+<summary><b>Option C</b> — Add to Pi config manually</summary>
 
-Add to `~/.config/opencode/opencode.json` (or `%USERPROFILE%\.config\opencode\opencode.json` on Windows):
+Add the extension to `${PI_CODING_AGENT_DIR:-~/.pi/agent}/settings.json`:
 
 ```json
 {
-  "plugin": ["@rama_nigg/open-cursor@latest"],
-  "provider": {
-    "cursor-acp": {
-      "name": "Cursor ACP",
-      "npm": "@ai-sdk/openai-compatible",
-      "options": {
-        "baseURL": "http://127.0.0.1:32124/v1"
-      },
-      "models": {
-        "cursor-acp/auto":              { "name": "Auto" },
-
-        "cursor-acp/claude-opus-4-7":   { "name": "Claude 4.7 Opus" },
-        "cursor-acp/claude-4.6-opus":   { "name": "Claude 4.6 Opus" },
-        "cursor-acp/claude-4.6-sonnet": { "name": "Claude 4.6 Sonnet" },
-        "cursor-acp/claude-4.5-opus":   { "name": "Claude 4.5 Opus" },
-        "cursor-acp/claude-4.5-sonnet": { "name": "Claude 4.5 Sonnet" },
-        "cursor-acp/claude-4.5-haiku":  { "name": "Claude 4.5 Haiku" },
-        "cursor-acp/claude-4-sonnet":   { "name": "Claude 4 Sonnet" },
-
-        "cursor-acp/gpt-5.5":           { "name": "GPT-5.5" },
-        "cursor-acp/gpt-5.4":           { "name": "GPT-5.4" },
-        "cursor-acp/gpt-5.4-mini":      { "name": "GPT-5.4 Mini" },
-        "cursor-acp/gpt-5.4-nano":      { "name": "GPT-5.4 Nano" },
-        "cursor-acp/gpt-5.3-codex":     { "name": "GPT-5.3 Codex" },
-        "cursor-acp/gpt-5.2":           { "name": "GPT-5.2" },
-        "cursor-acp/gpt-5.2-codex":     { "name": "GPT-5.2 Codex" },
-        "cursor-acp/gpt-5.1-codex":     { "name": "GPT-5.1 Codex" },
-        "cursor-acp/gpt-5.1-codex-max": { "name": "GPT-5.1 Codex Max" },
-        "cursor-acp/gpt-5.1-codex-mini":{ "name": "GPT-5.1 Codex Mini" },
-        "cursor-acp/gpt-5-mini":        { "name": "GPT-5 Mini" },
-
-        "cursor-acp/gemini-3.1-pro":    { "name": "Gemini 3.1 Pro" },
-        "cursor-acp/gemini-3-pro":      { "name": "Gemini 3 Pro" },
-        "cursor-acp/gemini-3-flash":    { "name": "Gemini 3 Flash" },
-
-        "cursor-acp/composer-2":        { "name": "Composer 2" },
-        "cursor-acp/composer-2-fast":   { "name": "Composer 2 Fast" },
-        "cursor-acp/composer-1.5":      { "name": "Composer 1.5" },
-
-        "cursor-acp/grok-4-20":         { "name": "Grok 4.20" },
-        "cursor-acp/kimi-k2.5":         { "name": "Kimi K2.5" }
-      }
-    }
-  }
+  "extensions": ["/absolute/path/to/pi-cursor/pi-extension/cursor-acp/index.ts"]
 }
 ```
 
-> **Refresh models anytime** with the bundled CLI:
-> ```bash
-> open-cursor sync-models                       # plain list
-> open-cursor sync-models --variants --compact  # group thinking / fast / -low/-high variants under each base
-> ```
-> The `--variants --compact` form is recommended — it folds dozens of `*-thinking-fast`, `*-high-fast`, etc. into a single entry per family with a `variants` map, and includes `cost` from the official Cursor pricing table so OpenCode TokenSpeed can render usage correctly.
+Make sure `${PI_CODING_AGENT_DIR:-~/.pi/agent}/models.json` contains a `cursor-acp` provider. The bundled model list lives at:
+
+```text
+pi-extension/cursor-acp/models.json
+```
+
+The installer does both updates idempotently and keeps `*.bak.<timestamp>` backups when it changes existing files.
 </details>
 
 <details>
-<summary><b>Option D</b> — Go TUI installer</summary>
+<summary><b>Option D</b> — Development (from source)</summary>
 
 ```bash
-git clone https://github.com/Nomadcxx/opencode-cursor.git
-cd opencode-cursor
-go build -o ./installer ./cmd/installer && ./installer
+git clone https://github.com/xycld/pi-cursor.git
+cd pi-cursor
+./install.sh
 ```
+
+Verify: `pi --offline --list-models cursor-acp`
 </details>
 
 <details>
 <summary><b>Option E</b> — LLM paste</summary>
 
 ```
-Install open-cursor for OpenCode: edit ~/.config/opencode/opencode.json, add "@rama_nigg/open-cursor@latest" to "plugin", add a "cursor-acp" provider with npm "@ai-sdk/openai-compatible" and a baseURL of http://127.0.0.1:32124/v1. Populate models by running `open-cursor sync-models --variants --compact` after install (or copy the model list from the README). Auth: `cursor-agent login`. Verify: `opencode models | grep cursor-acp`.
+Install pi-cursor for Pi: clone https://github.com/xycld/pi-cursor, run ./install.sh, authenticate with `cursor-agent login`, then verify with `pi --offline --list-models cursor-acp`. The installer adds the Pi extension path to ~/.pi/agent/settings.json and writes bundled Cursor model metadata into ~/.pi/agent/models.json.
 ```
-</details>
-
-<details>
-<summary><b>Option F</b> — Development (from source)</summary>
-
-```bash
-git clone https://github.com/Nomadcxx/opencode-cursor.git
-cd opencode-cursor
-./scripts/install-plugin.sh
-```
-
-Verify: `opencode models | grep cursor-acp`
 </details>
 
 ## Authentication
@@ -137,120 +97,82 @@ Most users:
 cursor-agent login
 ```
 
-Or via OpenCode:
+Check status:
 ```bash
-opencode auth login --provider cursor-acp
+cursor-agent status
 ```
 
-<details>
-<summary><b>SDK backend auth</b> (only if using <code>CURSOR_ACP_BACKEND=sdk</code> or SDK fallback)</summary>
-
-Set a real Cursor API key from [cursor.com/settings](https://cursor.com/settings):
-
-```bash
-export CURSOR_API_KEY=<your-api-key>
-```
-
-Other supported methods (priority order): OpenCode auth store (`opencode auth login --provider cursor-acp`), or `apiKey` in the `cursor-acp` provider options in `opencode.json`.
-
-Do not use the historical `cursor-agent` placeholder string as an SDK key.
-</details>
+Pi does not store Cursor OAuth tokens. Cursor login/session state remains in Cursor Agent.
 
 ## Usage
 
 ```bash
-opencode run "your prompt" --model cursor-acp/auto
-opencode run "your prompt" --model cursor-acp/sonnet-4.5
+pi --model cursor-acp/auto
+pi --model cursor-acp/sonnet-4.5
 ```
 
-## MCP Tool Bridge
-
-Any MCP servers already configured in your `opencode.json` work automatically with cursor-acp models — no extra setup needed. The plugin discovers them at startup and injects usage instructions into the system prompt so the model calls them via cursor-agent's Shell tool.
-
-`mcptool` is a shell CLI, so opencode applies your `bash` permission rules to `mcptool call ...`. If you rely on MCP tools asking for confirmation, keep `bash` as `ask` or add explicit `ask`/`deny` rules for `mcptool call *`.
+One-shot smoke test without installing globally:
 
 ```bash
-mcptool servers                                    # list discovered servers
-mcptool tools [server]                             # list available tools
-mcptool call hybrid-memory memory_stats            # call a tool manually
-mcptool call playwright browser_navigate '{"url":"https://example.com"}'
+pi --no-extensions \
+  -e /absolute/path/to/pi-cursor/pi-extension/cursor-acp/index.ts \
+  --model cursor-acp/auto \
+  --no-tools --no-session --print "Reply with exactly: OK"
 ```
 
-Any MCP server using stdio transport works. Tested with hybrid-memory, @modelcontextprotocol/server-filesystem, @playwright/mcp, and @modelcontextprotocol/server-everything.
+## Tool Use
+
+The first Pi bridge is intentionally thin: Pi sends the prompt to `cursor-agent --print --output-format stream-json` and streams the response back into Pi.
+
+Cursor Agent can still use its own CLI tools according to its mode and flags. Direct Pi tool-call forwarding and binary/image block passthrough are not part of this first release.
 
 ## Architecture
 
 ```mermaid
 flowchart TB
-    OC["OpenCode"] --> SDK["@ai-sdk/openai-compatible"]
-    SDK -->|"POST /v1/chat/completions"| PROXY["open-cursor proxy :32124"]
-    PROXY -->|"spawn persistent"| RUNNER["Node runner: sdk-runner.mjs"]
-    RUNNER -->|"stdin: {model, prompt, cwd}"| CURSORSDK["@cursor/sdk Agent.create + send()"]
-    CURSORSDK -->|"HTTPS"| CURSOR["Cursor API"]
-    CURSOR --> CURSORSDK
-
-    CURSORSDK -->|"stdout: NDJSON StreamJsonEvent"| PARSER["Parse + convert to SSE"]
-    PARSER -->|"assistant / thinking events"| SSE["SSE content chunks"]
-    PARSER -->|"tool_call event"| BOUNDARY["Provider boundary (v1 default)"]
-    BOUNDARY --> COMPAT["Schema compat + alias normalization"]
-    COMPAT --> GUARD["Tool-loop guard"]
-    GUARD -->|"emit tool_calls + finish_reason=tool_calls"| SDK
-    SDK --> OC
-
-    OC -->|"execute tool locally"| TOOLRUN["OpenCode tool runtime"]
-    TOOLRUN -->|"next request includes role:tool result"| SDK
-    SDK -->|"TOOL_RESULT prompt block"| RUNNER
-
-    RUNNER -->|"Shell tool_call"| MCPTOOL["mcptool CLI"]
-    MCPTOOL -->|"stdio"| MCP["MCP Servers"]
-    MCP --> MCPTOOL
-    MCPTOOL --> RUNNER
+    PI["Pi"] --> PROVIDER["cursor-acp provider"]
+    PROVIDER -->|"streamSimple"| BRIDGE["pi-cursor extension"]
+    BRIDGE -->|"stdin prompt"| AGENT["cursor-agent --print"]
+    AGENT -->|"stream-json"| PARSER["Parse assistant/thinking/result events"]
+    PARSER -->|"Pi message stream"| PI
+    AGENT --> CURSOR["Cursor subscription models"]
 ```
 
 <details>
-<summary><b>How the proxy works</b></summary>
+<summary><b>How the bridge works</b></summary>
 
-The proxy uses a dual-backend runtime. In `auto` mode (default) it prefers the `cursor-agent` binary when available. If `cursor-agent` is unavailable and a real Cursor API key is configured, or if `CURSOR_ACP_BACKEND=sdk` is set, a persistent Node.js child process (`scripts/sdk-runner.mjs`) runs `@cursor/sdk` on behalf of the proxy.
+`pi-cursor` registers a Pi provider named `cursor-acp`. Model metadata is loaded from Pi's global `models.json` when available, otherwise from the bundled `pi-extension/cursor-acp/models.json` file.
 
-By default, the SDK Agent runs in isolated mode (`settingSources: []`). To load Cursor environment settings in SDK mode, set `CURSOR_ACP_SETTING_SOURCES=all`.
+At request time the extension builds a text prompt from the Pi context, runs `cursor-agent --print --output-format stream-json --stream-partial-output`, parses assistant/thinking/result events, and emits Pi provider stream events.
 
-Default tool-loop mode: `CURSOR_ACP_TOOL_LOOP_MODE=opencode`. Details: [docs/architecture/runtime-tool-loop.md](docs/architecture/runtime-tool-loop.md).
+Runtime flags:
 
-Startup model refresh is additive by default. Use `CURSOR_ACP_MODEL_AUTO_REFRESH=false` to disable it, or `CURSOR_ACP_MODEL_AUTO_REFRESH=compact` to fold Cursor model variants into opencode variants.
+- `CURSOR_AGENT_EXECUTABLE` or `CURSOR_AGENT_PATH`: override the `cursor-agent` binary.
+- `CURSOR_ACP_FORCE=false`: do not pass `--force` to Cursor Agent.
+- `CURSOR_ACP_SANDBOX=enabled|disabled`: pass Cursor Agent sandbox mode.
+- `CURSOR_ACP_MODE=plan|ask`: run Cursor Agent in plan/ask mode.
+- `PI_CURSOR_MODELS_JSON`: override the model metadata JSON file.
 </details>
-
-## Alternatives
-THERE is currently not a single perfect plugin for cursor in opencode, my advice is stick with what is the LEAST worst option for you.
-|                   |        open-cursor         | [yet-another-opencode-cursor-auth](https://github.com/Yukaii/yet-another-opencode-cursor-auth) | [opencode-cursor-auth](https://github.com/POSO-PocketSolutions/opencode-cursor-auth) | [cursor-opencode-auth](https://github.com/R44VC0RP/cursor-opencode-auth) |
-| ----------------- | :------------------------: | :--------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------: | :----------------------------------------------------------------------: |
-| **Architecture**  | HTTP proxy via cursor-agent |                                       Direct Connect-RPC                                       |                             HTTP proxy via cursor-agent                              |                       Direct Connect-RPC/protobuf                        |
-| **Platform**      |   Linux, macOS, Windows    |                                      Linux, macOS                                           |                                     Linux, macOS                                     |                          macOS only (Keychain)                           |
-| **Max Prompt**    |   Unlimited (HTTP body)    |                                            Unknown                                             |                                   ~128KB (ARG_MAX)                                   |                                 Unknown                                  |
-| **Streaming**     |           ✓ SSE            |                                             ✓ SSE                                              |                                     Undocumented                                     |                                    ✓                                     |
-| **Error Parsing** |   ✓ (quota/auth/model)     |                                               ✗                                                |                                          ✗                                           |                              Debug logging                               |
-| **Installer**     |     ✓ TUI + one-liner      |                                               ✗                                                |                                          ✗                                           |                                    ✗                                     |
-| **OAuth Flow**    |  ✓ OpenCode integration    |                                            ✓ Native                                            |                                    Browser login                                     |                                 Keychain                                 |
-| **Tool Calling**  | ✓ OpenCode-owned loop |                                            ✓ Native                                            |                                    ✓ Experimental                                    |                                    ✗                                     |
-| **MCP Bridge**    | ✓ mcptool CLI (any MCP server) |                                               ✗                                                |                                          ✗                                           |                                    ✗                                     |
-| **Stability**     | Stable (uses official CLI) |                                          Experimental                                          |                                        Stable                                        |                               Experimental                               |
-| **Dependencies**  |     bun, cursor-agent      |                                              npm                                               |                                  bun, cursor-agent                                   |                               Node.js 18+                                |
-| **Port**          |           32124            |                                             18741                                              |                                        32123                                         |                                   4141                                   |
 
 ## Troubleshooting
 
-- `fetch() URL is invalid` or auth errors → `cursor-agent login` or `opencode auth login --provider cursor-acp`
-- `CURSOR_API_KEY not set` in SDK mode → set a real API key from [cursor.com/settings](https://cursor.com/settings), or use `CURSOR_ACP_BACKEND=auto` with a working `cursor-agent`
-- Model not responding → verify your API key/quota
-- Quota exceeded → [cursor.com/settings](https://cursor.com/settings)
-- Proxy not starting → ensure port 32124 is available
+- Auth errors → run `cursor-agent login`, then `cursor-agent status`.
+- Model list is empty → run `pi-cursor install`, then `pi --offline --list-models cursor-acp`.
+- `cursor-agent` not found → install Cursor Agent or set `CURSOR_AGENT_EXECUTABLE`.
+- Quota exceeded → switch model or check Cursor usage limits/settings.
+- Extension not loaded → check `${PI_CODING_AGENT_DIR:-~/.pi/agent}/settings.json` includes the absolute extension path.
 
-Debug logging: `CURSOR_ACP_LOG_LEVEL=debug opencode run "your prompt" --model cursor-acp/auto`
+Debug one request:
+```bash
+pi --no-extensions -e /absolute/path/to/pi-cursor/pi-extension/cursor-acp/index.ts \
+  --model cursor-acp/auto --no-tools --no-session --print "Reply with exactly: OK"
+```
 
 ## Roadmap
 
 ```mermaid
 flowchart LR
-    P1[/Stabilise/] --> P2[/MCP Bridge/] --> P3[/Simplify/] --> P4[/ACP + MCP/]
+    P1[/Model Load/] --> P2[/Streaming Bridge/] --> P3[/Tool Bridge/] --> P4[/Richer Inputs/]
 
     style P1 fill:#264653,stroke:#1d3557,color:#fff
     style P2 fill:#264653,stroke:#1d3557,color:#fff
@@ -258,12 +180,10 @@ flowchart LR
     style P4 fill:#495057,stroke:#343a40,color:#adb5bd
 ```
 
-[X] **Stabilise** — Clean up dead code, fix test isolation
-[X] **MCP Bridge** — Bridge MCP servers into Cursor models via `mcptool` CLI
-[ ] **Simplify** — Rip out serialisation layers
-[ ] **ACP + MCP** — Structured protocols end-to-end
-
-**ACP + MCP (deferred)** — End goal is a thin `OpenCode → Cursor ACP → MCP` plugin, not an evolved proxy. We ship the bridge until Cursor's ACP path passes MCP + headless approval re-validation. [Why and when →](docs/architecture/cursor-acp-mcp-future.md)
+[X] **Model Load** — Register `cursor-acp` models in Pi
+[X] **Streaming Bridge** — Stream `cursor-agent` output into Pi
+[ ] **Tool Bridge** — Forward Pi tool calls directly
+[ ] **Richer Inputs** — Binary/image block passthrough
 
 ## License
 

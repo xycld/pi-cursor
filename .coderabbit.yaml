@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-# CodeRabbit configuration for Nomadcxx/opencode-cursor
+# CodeRabbit configuration for xycld/pi-cursor, preserving upstream OpenCode review rules.
 # This file MUST remain tracked; do not add it to .gitignore.
 
 language: en
@@ -35,6 +35,12 @@ reviews:
     - path: "cmd/**/*.go"
       instructions: |
         Handle context cancellation and return non-zero exit codes on fatal errors.
+    - path: "pi-extension/**/*.ts"
+      instructions: |
+        Never log or persist raw credentials. Keep Cursor authentication delegated to cursor-agent.
+    - path: "bin/**/*.js"
+      instructions: |
+        Preserve backups before changing user config files and keep installer operations idempotent.
 
   auto_review:
     enabled: true

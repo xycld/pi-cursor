@@ -1,0 +1,12 @@
+{
+  "name": "pi-cursor-acp-extension",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "license": "BSD-3-Clause"
+}
